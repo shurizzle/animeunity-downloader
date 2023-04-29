@@ -1,7 +1,14 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+mod config;
+
+use std::{
+    collections::HashMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
+use dialoguer::{theme::ColorfulTheme, MultiSelect};
+use directories::ProjectDirs;
 use htmlentity::entity::ICodedDataTrait;
 use serde::{Deserialize, Deserializer};
 use url::Url;
@@ -243,49 +250,125 @@ impl DownloadLink {
     }
 }
 
-fn _main() -> Result<()> {
-    let (url, epno) =
-        parse_url("https://www.animeunity.tv/anime/4417-lamu-urusei-yatsura-2022-ita")?;
-    let mut def = None;
-    let episodes = fetch_anime(&url)?
-        .into_iter()
-        .enumerate()
-        .map(|(i, ep)| {
-            if epno.map_or(false, |epno| ep.id == epno) {
-                def = Some(i);
-            }
-            let e = fetch_episode(ep.scws_id)?;
+fn usage() {
+    println!(
+        "USAGE: {} [--<executor>] <URL>",
+        std::env::args().next().unwrap()
+    );
+    let mut cfg = ProjectDirs::from("dev", "shurizzle", "AnimeUnity Downloader")
+        .unwrap()
+        .config_dir()
+        .to_path_buf();
+    cfg.push("config.yaml");
+    println!("config: {}", cfg.display());
+}
 
-            let repr = format!("{} - {}", ep.number, ep.file_name);
-            let (file, link) = if e.legacy {
-                let mut url = Url::parse(&format!(
-                    "https://au-dl-1.scws-content.net/{}",
-                    ep.file_name
-                ))
-                .unwrap();
-                {
-                    let mut pairs = url.query_pairs_mut();
-                    pairs.append_pair("id", &ep.scws_id.to_string());
-                    pairs.append_pair("f", &e.folder_id);
-                    pairs.append_pair("s", &e.storage.number.to_string());
-                }
-                (ep.file_name, DownloadLink::Legacy(url))
-            } else {
-                let url = Url::parse(&format!(
-                    "https://au-d1-0{}.{}/download/{}/{}/{}p.mp4",
-                    e.proxy_download, e.host, e.storage_download.number, e.folder_id, e.quality
-                ))
-                .unwrap();
-                let n = e.name.replace('&', ".");
-                (e.name, DownloadLink::Current(url, n))
+fn _main() -> Result<()> {
+    let (url, ex) = match std::env::args().len() {
+        2 => (std::env::args().nth(1).unwrap(), config::Executor::Print),
+        3 => {
+            let (mut e, mut url) = {
+                let mut it = std::env::args().skip(1);
+                (it.next().unwrap(), it.next().unwrap())
             };
 
-            Ok((repr, file, link))
-        })
-        .collect::<Result<Vec<(String, String, DownloadLink)>>>()?;
+            if url.starts_with("--") {
+                std::mem::swap(&mut e, &mut url);
+            }
 
-    for (_, _, url) in episodes {
-        println!("{}", url.download_link()?);
+            if e.starts_with("--") {
+                e.remove(0);
+                e.remove(0);
+                let executor = if let Some(executor) =
+                    config::load()?.remove(&e).map(config::Executor::Command)
+                {
+                    executor
+                } else {
+                    println!("Invalid executor {:?}", e);
+                    std::process::exit(1);
+                };
+
+                (url, executor)
+            } else {
+                usage();
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            usage();
+            std::process::exit(1);
+        }
+    };
+
+    let (url, epno) = parse_url(&url)?;
+
+    let mut defaults = Vec::new();
+    let mut reprs = Vec::new();
+    let mut data = Vec::new();
+
+    for ep in fetch_anime(&url)?.into_iter() {
+        defaults.push(epno.map_or(true, |epno| ep.id == epno));
+
+        let e = fetch_episode(ep.scws_id)?;
+
+        reprs.push(format!("{} - {}", ep.number, ep.file_name));
+
+        let d = if e.legacy {
+            let mut url = Url::parse(&format!(
+                "https://au-dl-1.scws-content.net/{}",
+                ep.file_name
+            ))
+            .unwrap();
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("id", &ep.scws_id.to_string());
+                pairs.append_pair("f", &e.folder_id);
+                pairs.append_pair("s", &e.storage.number.to_string());
+            }
+            (ep.file_name, DownloadLink::Legacy(url))
+        } else {
+            let url = Url::parse(&format!(
+                "https://au-d1-0{}.{}/download/{}/{}/{}p.mp4",
+                e.proxy_download, e.host, e.storage_download.number, e.folder_id, e.quality
+            ))
+            .unwrap();
+            let n = e.name.replace('&', ".");
+            (e.name, DownloadLink::Current(url, n))
+        };
+        data.push(d);
+    }
+
+    // println!("a      - Select/unselect all\nEsc/q  - quit\nSpace  - Select/unselect\nEnter  - Submit\nDown/j - Move cursor down\nUp/k   - Move cursor up");
+    let selections = MultiSelect::with_theme(&ColorfulTheme::default())
+        .items(reprs.as_slice())
+        .defaults(defaults.as_slice())
+        .interact_opt()?;
+    let mut selections = if let Some(s) = selections {
+        s
+    } else {
+        return Ok(());
+    };
+    selections.sort_unstable();
+
+    for (i, data) in data.into_iter().enumerate() {
+        if selections.is_empty() {
+            break;
+        }
+
+        match selections.binary_search(&i) {
+            Ok(i) => {
+                selections.remove(i);
+            }
+            Err(_) => continue,
+        }
+
+        let (file, url) = data;
+        let url = url.download_link()?;
+
+        let mut values = HashMap::new();
+        values.insert("url", url.to_string());
+        values.insert("file", file);
+        ex.execute(&values)?;
     }
 
     Ok(())
