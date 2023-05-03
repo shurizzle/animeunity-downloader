@@ -442,19 +442,14 @@ fn _main() -> Result<()> {
         let e = fetch_episode(scws_id)?;
 
         let (file, url) = {
-            let u = ureq::get("https://au-a1-01.scws-content.net/get-ip")
-                .call()
-                .context("Cannot get IP")?
-                .into_string()
-                .context("Cannot get IP")?;
-
             let expires = {
                 let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
                     + Duration::from_millis(36_00000 * 2);
                 ((x.as_secs() as u128) + ((x.subsec_millis() / 500) as u128)).to_string()
             };
-            let mut token = base64::engine::general_purpose::STANDARD_NO_PAD
-                .encode(md5::compute(format!("{}{} Yc8U6r8KjAKAepEA", expires, u)).as_slice());
+            let mut token = base64::engine::general_purpose::STANDARD_NO_PAD.encode(
+                md5::compute(format!("{}{} Yc8U6r8KjAKAepEA", expires, e.client_ip)).as_slice(),
+            );
             {
                 let buf = unsafe { token.as_mut_vec() };
                 let mut i = 0;
