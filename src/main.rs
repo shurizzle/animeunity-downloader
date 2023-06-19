@@ -51,7 +51,7 @@ impl PadLeft for String {
 fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
     fn fetch_info_page(id: u64, start: u64, stop: u64) -> Result<Info> {
         let url = format!(
-            "https://www.animeunity.tv/info_api/{}/1?start_range={}&end_range={}",
+            "https://www.animeunity.it/info_api/{}/1?start_range={}&end_range={}",
             id, start, stop
         );
 
@@ -217,7 +217,7 @@ fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
 
     {
         let is_valid_host = match url.host_str() {
-            Some(host) => host == "animeunity.tv" || host == "www.animeunity.tv",
+            Some(host) => host == "animeunity.it" || host == "www.animeunity.it",
             _ => false,
         };
         if !is_valid_host {
