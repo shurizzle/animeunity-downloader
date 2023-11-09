@@ -1,23 +1,17 @@
 mod config;
 
-use std::{
-    collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
-use base64::Engine;
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use directories::ProjectDirs;
-use serde::{Deserialize, Deserializer};
-use url::Url;
+use mini_v8::{FromValue, MiniV8};
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Episode {
     pub id: u64,
     pub number: String,
-    pub scws_id: u64,
-    pub file_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,45 +167,6 @@ fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct IdNumber {
-    pub id: u64,
-    pub number: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VideoCdn {
-    pub id: u64,
-    pub number: u64,
-    pub r#type: String,
-    pub proxies: Vec<IdNumber>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Video {
-    pub id: u64,
-    pub name: String,
-    pub client_ip: String,
-    pub folder_id: String,
-    #[serde(deserialize_with = "u8_to_bool")]
-    pub legacy: bool,
-    pub quality: u16,
-    pub storage: IdNumber,
-    pub storage_download: IdNumber,
-    pub host: String,
-    pub proxy_index: u64,
-    pub proxy_download: u64,
-    pub cdn: VideoCdn,
-    pub size: u64,
-}
-
-fn u8_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    u8::deserialize(deserializer).map(|n| n != 0)
-}
-
 fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
     let url = url::Url::parse(url).context("Invalid URL")?;
 
@@ -266,83 +221,98 @@ fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
     bail!("Invalid URL")
 }
 
-fn fetch_episode(id: u64) -> Result<Video> {
-    let url = format!("https://scws.work/videos/{}", id);
-
-    let body = ureq::get(url.as_str())
-        .call()
-        .context("Invalid response")?
-        .into_string()
-        .context("Invalid response")?;
-    serde_json::from_str(body.as_str()).context("Invalid video")
+fn fetch_embed_url(id: u64) -> Result<String> {
+    Ok(
+        ureq::get(&format!("https://www.animeunity.to/embed-url/{id}"))
+            .call()?
+            .into_string()?,
+    )
 }
 
-pub enum DownloadLink {
-    Legacy(Url),
-    Current(Url, String),
+#[derive(Debug, Clone, Deserialize)]
+pub struct Video {
+    pub file: String,
+    pub url: String,
 }
 
-impl DownloadLink {
-    pub fn download_link(self) -> Result<Url> {
-        let u = ureq::get("https://au-a1-01.scws-content.net/get-ip")
-            .call()
-            .context("Cannot get IP")?
-            .into_string()
-            .context("Cannot get IP")?;
+pub fn type_name(value: &mini_v8::Value) -> &'static str {
+    use mini_v8::Value;
+    match value {
+        Value::Undefined => "undefined",
+        Value::Null => "null",
+        Value::Boolean(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::Date(_) => "date",
+        Value::Function(_) => "function",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        Value::String(_) => "string",
+    }
+}
 
-        let expires = {
-            let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                + Duration::from_millis(36_00000 * 2);
-            ((x.as_secs() as u128) + ((x.subsec_millis() / 500) as u128)).to_string()
+impl FromValue for Video {
+    fn from_value(value: mini_v8::Value, mv8: &MiniV8) -> mini_v8::Result<Self> {
+        let value = match value {
+            mini_v8::Value::Object(v) => v,
+            _ => {
+                return Err(mini_v8::Error::FromJsConversionError {
+                    from: type_name(&value),
+                    to: "Video",
+                })
+            }
         };
-        let mut token = base64::engine::general_purpose::STANDARD_NO_PAD
-            .encode(md5::compute(format!("{}{} Yc8U6r8KjAKAepEA", expires, u)).as_slice());
-        {
-            let buf = unsafe { token.as_mut_vec() };
-            let mut i = 0;
-            while let Some(pos) = buf
-                .as_slice()
-                .get(i..)
-                .and_then(|h| memchr::memchr2(b'+', b'/', h))
-            {
-                i += pos;
 
-                match buf[i] {
-                    b'+' => {
-                        buf[i] = b'-';
-                    }
-                    b'/' => {
-                        buf[i] = b'_';
-                    }
-                    _ => unreachable!(),
+        let file = value
+            .get::<_, mini_v8::Value>("file")?
+            .coerce_string(mv8)?
+            .to_string();
+        let url = value
+            .get::<_, mini_v8::Value>("url")?
+            .coerce_string(mv8)?
+            .to_string();
+
+        Ok(Self { file, url })
+    }
+}
+
+fn extract_video_infos(code: String) -> Result<Video> {
+    let mv8 = MiniV8::new();
+    match mv8.eval(code) {
+        Ok(()) => (),
+        Err(err) => {
+            bail!("{}", err)
+        }
+    }
+    match mv8.eval("({file:window.video.filename||window.video.name,url:window.downloadUrl})") {
+        Ok(x) => Ok(x),
+        Err(err) => {
+            bail!("{}", err)
+        }
+    }
+}
+
+fn fetch_video_infos(id: u64) -> Result<Video> {
+    let body = ureq::get(&fetch_embed_url(id)?).call()?.into_string()?;
+
+    let script = {
+        use soup::prelude::*;
+
+        let soup = Soup::new(&body);
+        let mut code = String::from("const window={};");
+        for script in soup.tag("script").find_all() {
+            if script.get("src").is_none() {
+                let text = script.text();
+                let text = text.trim();
+                if text.starts_with("window.video") || text.starts_with("window.downloadUrl") {
+                    code.push_str(text);
+                    code.push('\n');
                 }
-
-                i += 1;
             }
         }
+        code
+    };
 
-        let url = match self {
-            Self::Legacy(mut url) => {
-                {
-                    let mut pairs = url.query_pairs_mut();
-                    pairs.append_pair("token", &token);
-                    pairs.append_pair("expires", &expires);
-                }
-                url
-            }
-            Self::Current(mut url, filename) => {
-                {
-                    let mut pairs = url.query_pairs_mut();
-                    pairs.append_pair("token", &token);
-                    pairs.append_pair("expires", &expires);
-                    pairs.append_pair("filename", &filename);
-                }
-                url
-            }
-        };
-
-        Ok(url)
-    }
+    extract_video_infos(script)
 }
 
 fn usage() {
@@ -402,16 +372,11 @@ fn _main() -> Result<()> {
     let mut data = Vec::new();
 
     for ep in fetch_info(id) {
-        let Episode {
-            number,
-            id,
-            scws_id,
-            file_name,
-        } = ep?;
+        let Episode { number, id } = ep?;
 
         defaults.push(epno.map_or(true, |epno| id == epno));
         reprs.push(number);
-        data.push((scws_id, file_name));
+        data.push(id);
     }
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
@@ -426,7 +391,7 @@ fn _main() -> Result<()> {
     };
     selections.sort_unstable();
 
-    for (i, data) in data.into_iter().enumerate() {
+    for (i, id) in data.into_iter().enumerate() {
         if selections.is_empty() {
             break;
         }
@@ -438,72 +403,10 @@ fn _main() -> Result<()> {
             Err(_) => continue,
         }
 
-        let (scws_id, file_name) = data;
-        let e = fetch_episode(scws_id)?;
-
-        let (file, url) = {
-            let expires = {
-                let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
-                    + Duration::from_millis(36_00000 * 2);
-                ((x.as_secs() as u128) + ((x.subsec_millis() / 500) as u128)).to_string()
-            };
-            let mut token = base64::engine::general_purpose::STANDARD_NO_PAD.encode(
-                md5::compute(format!("{}{} Yc8U6r8KjAKAepEA", expires, e.client_ip)).as_slice(),
-            );
-            {
-                let buf = unsafe { token.as_mut_vec() };
-                let mut i = 0;
-                while let Some(pos) = buf
-                    .as_slice()
-                    .get(i..)
-                    .and_then(|h| memchr::memchr2(b'+', b'/', h))
-                {
-                    i += pos;
-
-                    match buf[i] {
-                        b'+' => {
-                            buf[i] = b'-';
-                        }
-                        b'/' => {
-                            buf[i] = b'_';
-                        }
-                        _ => unreachable!(),
-                    }
-
-                    i += 1;
-                }
-            }
-
-            if e.legacy {
-                let mut url =
-                    Url::parse(&format!("https://au-dl-1.scws-content.net/{}", file_name)).unwrap();
-                {
-                    let mut pairs = url.query_pairs_mut();
-                    pairs.append_pair("id", &scws_id.to_string());
-                    pairs.append_pair("f", &e.folder_id);
-                    pairs.append_pair("s", &e.storage.number.to_string());
-                    pairs.append_pair("token", &token);
-                    pairs.append_pair("expires", &expires);
-                }
-                (file_name, url)
-            } else {
-                let mut url = Url::parse(&format!(
-                    "https://au-d1-0{}.{}/download/{}/{}/{}p.mp4",
-                    e.proxy_download, e.host, e.storage_download.number, e.folder_id, e.quality
-                ))
-                .unwrap();
-                {
-                    let mut pairs = url.query_pairs_mut();
-                    pairs.append_pair("token", &token);
-                    pairs.append_pair("expires", &expires);
-                    pairs.append_pair("filename", &e.name.replace('&', "."));
-                }
-                (e.name, url)
-            }
-        };
+        let Video { file, url } = fetch_video_infos(id)?;
 
         let mut values = HashMap::new();
-        values.insert("url", url.to_string());
+        values.insert("url", url);
         values.insert("file", file);
         ex.execute(&values)?;
     }
