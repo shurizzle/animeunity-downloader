@@ -6,15 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ureq = "2.6.2"
-serde = { version = "1.0.160", features = ["derive"] }
-serde_json = "1.0.96"
-serde_yaml = "0.9.21"
-url = "2.3.1"
-anyhow = "1.0.70"
-memchr = "2.5.0"
+ureq = "2.8.0"
+serde = { version = "1.0.192", features = ["derive"] }
+serde_json = "1.0.108"
+serde_yaml = "0.9.27"
+url = "2.4.1"
+anyhow = "1.0.75"
+memchr = "2.6.4"
 dialoguer = "0.11.0"
 new_string_template = "1.4.0"
-directories = "5.0.0"
+directories = "5.0.1"
 soup = "0.5.1"
 mini-v8 = "0.4.1"
