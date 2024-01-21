@@ -1,4 +1,5 @@
 mod config;
+pub(crate) mod template;
 
 use std::collections::HashMap;
 
@@ -283,8 +284,18 @@ fn extract_video_infos(code: String) -> Result<Video> {
             bail!("{}", err)
         }
     }
-    match mv8.eval("({file:window.video.filename||window.video.name,url:window.downloadUrl})") {
-        Ok(x) => Ok(x),
+    match mv8.eval::<_, Video>(
+        "({file:window.video.filename||window.video.name,url:window.downloadUrl})",
+    ) {
+        Ok(x) => {
+            if x.url.is_empty() {
+                bail!("url not found");
+            }
+            if x.file.is_empty() {
+                bail!("file not found");
+            }
+            Ok(x)
+        }
         Err(err) => {
             bail!("{}", err)
         }
@@ -303,10 +314,10 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
             if script.get("src").is_none() {
                 let text = script.text();
                 let text = text.trim();
-                if text.starts_with("window.video") || text.starts_with("window.downloadUrl") {
-                    code.push_str(text);
-                    code.push('\n');
-                }
+                code.push_str("try{");
+                code.push_str(text);
+                code.push_str("}catch(____e){}");
+                code.push('\n');
             }
         }
         code

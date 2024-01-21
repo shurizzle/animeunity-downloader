@@ -2,13 +2,25 @@ use std::{collections::HashMap, fs::File, process::Command};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
-use new_string_template::template::Template;
 use serde::{de::Error, Deserialize};
+
+use crate::template::{Template, VarIter, Variables};
 
 #[derive(Debug)]
 pub enum Executor {
     Command(CommandExecutor),
     Print,
+}
+
+pub struct CommandVariables<'a> {
+    inner: Option<VarIter<'a>>,
+    args: std::slice::Iter<'a, Template>,
+}
+
+#[allow(dead_code)]
+pub enum ExecutorVariables<'a> {
+    Command(CommandVariables<'a>),
+    Print(Option<&'a str>),
 }
 
 impl From<CommandExecutor> for Executor {
@@ -18,14 +30,32 @@ impl From<CommandExecutor> for Executor {
     }
 }
 
+impl<'a> From<CommandVariables<'a>> for ExecutorVariables<'a> {
+    fn from(value: CommandVariables<'a>) -> Self {
+        Self::Command(value)
+    }
+}
+
 impl Executor {
-    pub fn execute<S: AsRef<str>>(&self, values: &HashMap<&str, S>) -> Result<()> {
+    pub fn execute<V: Variables>(&self, values: &V) -> Result<()> {
         match self {
             Self::Command(cmd) => cmd.execute(values),
             Self::Print => {
-                println!("{}", values.get("url").unwrap().as_ref());
+                if let Some(url) = values.get("url") {
+                    println!("{}", url);
+                } else {
+                    println!();
+                }
                 Ok(())
             }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn variables(&self) -> ExecutorVariables {
+        match self {
+            Executor::Command(cmd) => cmd.variables().into(),
+            Executor::Print => ExecutorVariables::Print(Some("url")),
         }
     }
 }
@@ -43,21 +73,52 @@ impl<'de> Deserialize<'de> for CommandExecutor {
         if res.is_empty() {
             Err(D::Error::custom("Invalid command"))
         } else {
-            Ok(Self(res.into_iter().map(Template::new).collect()))
+            Ok(Self(
+                res.into_iter()
+                    .map(Template::parse)
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|vec| if vec.is_empty() { None } else { Some(vec) })
+                    .ok_or_else(|| D::Error::custom("Invalid command"))?,
+            ))
+        }
+    }
+}
+
+impl<'a> Iterator for CommandVariables<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(inner) = self.inner.as_mut() {
+                if let Some(name) = inner.next() {
+                    return Some(name);
+                } else {
+                    self.inner = None;
+                }
+            }
+
+            self.inner = Some(self.args.next()?.variables());
         }
     }
 }
 
 impl CommandExecutor {
-    pub fn execute<S: AsRef<str>>(&self, values: &HashMap<&str, S>) -> Result<()> {
-        let mut cmd = Command::new(&self.0[0].render(values)?);
+    pub fn execute<V: Variables>(&self, values: &V) -> Result<()> {
+        let mut cmd = Command::new(&*self.0[0].render(values));
 
         for x in self.0.iter().skip(1) {
-            cmd.arg(x.render(values)?);
+            cmd.arg(&*x.render(values));
         }
 
         cmd.spawn()?.wait()?;
         Ok(())
+    }
+
+    pub fn variables(&self) -> CommandVariables {
+        CommandVariables {
+            inner: None,
+            args: self.0.iter(),
+        }
     }
 }
 
