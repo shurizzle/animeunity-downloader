@@ -51,7 +51,6 @@ impl Executor {
         }
     }
 
-    #[allow(dead_code)]
     pub fn variables(&self) -> ExecutorVariables {
         match self {
             Executor::Command(cmd) => cmd.variables().into(),
@@ -98,6 +97,18 @@ impl<'a> Iterator for CommandVariables<'a> {
             }
 
             self.inner = Some(self.args.next()?.variables());
+        }
+    }
+}
+
+impl<'a> Iterator for ExecutorVariables<'a> {
+    type Item = &'a str;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Command(it) => it.next(),
+            Self::Print(it) => it.take(),
         }
     }
 }

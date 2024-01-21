@@ -1,13 +1,40 @@
 mod config;
 pub(crate) mod template;
 
-use std::collections::HashMap;
+use std::fmt;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use directories::ProjectDirs;
 use mini_v8::{FromValue, MiniV8};
 use serde::Deserialize;
+use template::Variables;
+use urlencoding::Encoded;
+
+#[derive(Debug)]
+pub struct AnimeContext {
+    pub anime_id: u64,
+    pub slug: Option<Box<str>>,
+    pub title: Option<Box<str>>,
+    pub episode: Option<u64>,
+    pub mal_id: Option<u64>,
+    pub anilist_id: Option<u64>,
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Requirements: u8 {
+        const TITLE      = 1 << 0;
+        const MAL_ID     = 1 << 1;
+        const ANILIST_ID = 1 << 2;
+    }
+}
+
+impl Requirements {
+    pub fn needs_title(&self) -> bool {
+        !(*self & (Self::TITLE | Self::MAL_ID | Self::ANILIST_ID)).is_empty()
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Episode {
@@ -17,8 +44,70 @@ pub struct Episode {
 
 #[derive(Debug, Deserialize)]
 pub struct Info {
+    pub slug: Option<Box<str>>,
+    pub title: Option<Box<str>>,
     pub episodes_count: u64,
     pub episodes: Vec<Episode>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Video {
+    pub file: Box<str>,
+    pub url: Box<str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EpisodeVariables<'a> {
+    anime: &'a AnimeContext,
+    video: &'a Video,
+    episode: &'a Episode,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EpisodeValue<'a> {
+    Str(&'a str),
+    U64(u64),
+}
+
+impl<'a> fmt::Display for EpisodeValue<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EpisodeValue::Str(s) => fmt::Display::fmt(s, f),
+            EpisodeValue::U64(s) => fmt::Display::fmt(s, f),
+        }
+    }
+}
+
+impl<'a> EpisodeVariables<'a> {
+    #[inline]
+    pub fn new(anime: &'a AnimeContext, video: &'a Video, episode: &'a Episode) -> Self {
+        Self {
+            anime,
+            video,
+            episode,
+        }
+    }
+}
+
+impl<'a> Variables for EpisodeVariables<'a> {
+    type Item<'b> = EpisodeValue<'b>
+    where
+        Self: 'b;
+
+    #[allow(clippy::needless_lifetimes)]
+    fn get<'b, S: AsRef<str>>(&'b self, name: S) -> Option<Self::Item<'b>> {
+        let name = name.as_ref();
+        match name {
+            "slug" => self.anime.slug.as_deref().map(EpisodeValue::Str),
+            "title" => self.anime.title.as_deref().map(EpisodeValue::Str),
+            "mal_id" => self.anime.mal_id.map(EpisodeValue::U64),
+            "anilist_id" => self.anime.anilist_id.map(EpisodeValue::U64),
+            "episode" => Some(EpisodeValue::Str(&self.episode.number)),
+            "file" => Some(EpisodeValue::Str(&self.video.file)),
+            "url" => Some(EpisodeValue::Str(&self.video.url)),
+            _ => None,
+        }
+    }
 }
 
 pub trait PadLeft {
@@ -43,8 +132,118 @@ impl PadLeft for String {
     }
 }
 
-fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
-    fn fetch_info_page(id: u64, start: u64, stop: u64) -> Result<Info> {
+fn fetch_info<'a>(
+    id: u64,
+    slug: &'a mut Option<Box<str>>,
+    title: &'a mut Option<Box<str>>,
+) -> impl Iterator<Item = Result<(Box<str>, Episode)>> + 'a {
+    #[derive(Deserialize)]
+    pub struct InfoMin {
+        pub episodes_count: u64,
+        pub episodes: Vec<Episode>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct InfoSlug {
+        pub slug: Option<Box<str>>,
+        pub episodes_count: u64,
+        pub episodes: Vec<Episode>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct InfoTitle {
+        pub name: Option<Box<str>>,
+        pub episodes_count: u64,
+        pub episodes: Vec<Episode>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct InfoSlugTitle {
+        pub name: Option<Box<str>>,
+        pub slug: Option<Box<str>>,
+        pub episodes_count: u64,
+        pub episodes: Vec<Episode>,
+    }
+
+    impl From<InfoMin> for Info {
+        fn from(
+            InfoMin {
+                episodes_count,
+                episodes,
+            }: InfoMin,
+        ) -> Self {
+            Info {
+                slug: None,
+                title: None,
+                episodes_count,
+                episodes,
+            }
+        }
+    }
+
+    impl From<InfoSlug> for Info {
+        fn from(
+            InfoSlug {
+                slug,
+                episodes_count,
+                episodes,
+            }: InfoSlug,
+        ) -> Self {
+            Info {
+                slug,
+                title: None,
+                episodes_count,
+                episodes,
+            }
+        }
+    }
+
+    impl From<InfoTitle> for Info {
+        fn from(
+            InfoTitle {
+                name,
+                episodes_count,
+                episodes,
+            }: InfoTitle,
+        ) -> Self {
+            Info {
+                slug: None,
+                title: name,
+                episodes_count,
+                episodes,
+            }
+        }
+    }
+
+    impl From<InfoSlugTitle> for Info {
+        fn from(
+            InfoSlugTitle {
+                slug,
+                name,
+                episodes_count,
+                episodes,
+            }: InfoSlugTitle,
+        ) -> Self {
+            Info {
+                slug,
+                title: name,
+                episodes_count,
+                episodes,
+            }
+        }
+    }
+
+    fn parse_info<'a, T: Into<Info> + Deserialize<'a>>(body: &'a str) -> serde_json::Result<Info> {
+        serde_json::from_slice::<T>(body.as_bytes()).map(Into::into)
+    }
+
+    fn fetch_info_page<'a>(
+        id: u64,
+        start: u64,
+        stop: u64,
+        slug: &'a mut Option<Box<str>>,
+        title: &'a mut Option<Box<str>>,
+    ) -> Result<Info> {
         let url = format!(
             "https://www.animeunity.to/info_api/{}/1?start_range={}&end_range={}",
             id, start, stop
@@ -56,7 +255,13 @@ fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
             .into_string()
             .context("Invalid informations")?;
 
-        serde_json::from_slice(body.as_bytes()).context("Invalid informations")
+        match (slug.is_none(), title.is_none()) {
+            (true, true) => parse_info::<InfoSlugTitle>(&body),
+            (true, false) => parse_info::<InfoSlug>(&body),
+            (false, true) => parse_info::<InfoTitle>(&body),
+            (false, false) => parse_info::<InfoMin>(&body),
+        }
+        .context("Invalid informations")
     }
 
     fn num_len(mut n: u64) -> usize {
@@ -99,32 +304,41 @@ fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
         }
     }
 
-    struct InfoFetcher {
+    struct InfoFetcher<'a> {
         id: u64,
         num_len: usize,
         eps: Option<std::vec::IntoIter<Episode>>,
         pages: Option<Pages>,
+        slug: &'a mut Option<Box<str>>,
+        title: &'a mut Option<Box<str>>,
         finish: bool,
     }
 
-    impl Iterator for InfoFetcher {
-        type Item = Result<Episode>;
+    impl<'a> Iterator for InfoFetcher<'a> {
+        type Item = Result<(Box<str>, Episode)>;
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
                 if let Some(mut eps) = self.eps.take() {
-                    if let Some(mut ep) = eps.next() {
+                    if let Some(ep) = eps.next() {
                         self.eps = Some(eps);
-                        ep.number.pad_left(self.num_len);
-                        return Some(Ok(ep));
+                        let mut name = ep.number.clone();
+                        name.pad_left(self.num_len);
+                        return Some(Ok((name.into(), ep)));
                     }
                 }
 
                 if let Some(mut pages) = self.pages.take() {
                     if let Some((start, stop)) = pages.next() {
                         self.pages = Some(pages);
-                        match fetch_info_page(self.id, start, stop) {
-                            Ok(i) => {
+                        match fetch_info_page(self.id, start, stop, self.slug, self.title) {
+                            Ok(mut i) => {
+                                if let Some(slug) = i.slug.take() {
+                                    *self.slug = Some(slug);
+                                }
+                                if let Some(title) = i.title.take() {
+                                    *self.title = Some(title);
+                                }
                                 self.eps = Some(i.episodes.into_iter());
                                 continue;
                             }
@@ -142,8 +356,14 @@ fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
                     return None;
                 }
 
-                match fetch_info_page(self.id, 1, 120) {
-                    Ok(info) => {
+                match fetch_info_page(self.id, 1, 120, self.slug, self.title) {
+                    Ok(mut info) => {
+                        if let Some(slug) = info.slug.take() {
+                            *self.slug = Some(slug);
+                        }
+                        if let Some(title) = info.title.take() {
+                            *self.title = Some(title);
+                        }
                         self.eps = Some(info.episodes.into_iter());
                         self.num_len = num_len(info.episodes_count);
                         let mut pages = Pages::new(info.episodes_count);
@@ -165,10 +385,23 @@ fn fetch_info(id: u64) -> impl Iterator<Item = Result<Episode>> {
         eps: None,
         pages: None,
         finish: false,
+        slug,
+        title,
     }
 }
 
-fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
+fn parse_url(url: &str) -> Result<AnimeContext> {
+    if let Ok(anime_id) = url.parse::<u64>() {
+        return Ok(AnimeContext {
+            anime_id,
+            slug: None,
+            title: None,
+            episode: None,
+            mal_id: None,
+            anilist_id: None,
+        });
+    }
+
     let url = url::Url::parse(url).context("Invalid URL")?;
 
     {
@@ -188,10 +421,18 @@ fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
                     break 'err;
                 }
 
-                let id = match segs.next() {
+                let (anime_id, slug) = match segs.next() {
                     Some(slug) => {
-                        if let Ok(id) = slug.split('-').next().unwrap().parse::<u64>() {
-                            id
+                        let mut it = slug.splitn(2, '-');
+                        if let Some(id) = it.next().and_then(|id| id.parse::<u64>().ok()) {
+                            let slug = it.next().and_then(|slug| {
+                                if slug.is_empty() {
+                                    None
+                                } else {
+                                    Some(slug.into())
+                                }
+                            });
+                            (id, slug)
                         } else {
                             break 'err;
                         }
@@ -199,7 +440,7 @@ fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
                     None => break 'err,
                 };
 
-                let ep = match segs.next() {
+                let episode = match segs.next() {
                     Some(e) => {
                         if segs.next().is_some() {
                             break 'err;
@@ -213,7 +454,14 @@ fn parse_url(url: &str) -> Result<(u64, Option<u64>)> {
                     None => None,
                 };
 
-                return Ok((id, ep));
+                return Ok(AnimeContext {
+                    anime_id,
+                    slug,
+                    title: None,
+                    episode,
+                    mal_id: None,
+                    anilist_id: None,
+                });
             }
             None => break 'err,
         }
@@ -228,12 +476,6 @@ fn fetch_embed_url(id: u64) -> Result<String> {
             .call()?
             .into_string()?,
     )
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Video {
-    pub file: String,
-    pub url: String,
 }
 
 pub fn type_name(value: &mini_v8::Value) -> &'static str {
@@ -266,11 +508,13 @@ impl FromValue for Video {
         let file = value
             .get::<_, mini_v8::Value>("file")?
             .coerce_string(mv8)?
-            .to_string();
+            .to_string()
+            .into_boxed_str();
         let url = value
             .get::<_, mini_v8::Value>("url")?
             .coerce_string(mv8)?
-            .to_string();
+            .to_string()
+            .into_boxed_str();
 
         Ok(Self { file, url })
     }
@@ -326,6 +570,140 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
     extract_video_infos(script)
 }
 
+impl AnimeContext {
+    fn fetch_title(&mut self) -> Result<()> {
+        let url = format!(
+            "https://www.animeunity.to/anime/{}-{}",
+            self.anime_id,
+            self.slug
+                .as_ref()
+                .ok_or_else(|| anyhow!("cannot find slug"))?
+        );
+
+        let body = ureq::get(&url)
+            .call()
+            .context("Invalid informations")?
+            .into_string()
+            .context("Invalid informations")?;
+
+        {
+            use soup::prelude::*;
+
+            let soup = Soup::new(&body);
+            for player in soup.tag("video-player").find_all() {
+                #[derive(Debug, Deserialize)]
+                struct Info {
+                    pub title_eng: String,
+                }
+                if let Some(anime) = player.get("anime") {
+                    let Info { title_eng: title } = serde_json::from_slice(anime.as_bytes())
+                        .context("Invalid player informations")?;
+                    self.title = Some(title.into());
+                    return Ok(());
+                }
+            }
+        }
+
+        bail!("Cannot find anime title");
+    }
+
+    fn fetch_ids<F>(&mut self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&mut AnimeContext) -> bool,
+    {
+        let url = format!(
+            "https://www.animeunity.to/archivio/?title={}",
+            Encoded(
+                self.title
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("cannot find title"))?
+                    .as_bytes()
+            )
+        );
+
+        let body = ureq::get(&url)
+            .call()
+            .context("Invalid informations")?
+            .into_string()
+            .context("Invalid informations")?;
+
+        {
+            use soup::prelude::*;
+
+            let soup = Soup::new(&body);
+            for player in soup.tag("archivio").find_all() {
+                #[derive(Deserialize)]
+                struct Info {
+                    pub id: u64,
+                    pub anilist_id: Option<u64>,
+                    pub mal_id: Option<u64>,
+                }
+                if let Some(anime) = player.get("records") {
+                    let infos: Vec<Info> = serde_json::from_slice(anime.as_bytes())
+                        .context("Invalid player informations")?;
+                    for Info {
+                        id,
+                        anilist_id,
+                        mal_id,
+                    } in infos
+                    {
+                        if id == self.anime_id {
+                            if let Some(anilist_id) = anilist_id {
+                                self.anilist_id = Some(anilist_id);
+                            }
+                            if let Some(mal_id) = mal_id {
+                                self.mal_id = Some(mal_id);
+                            }
+                            if f(self) {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn fetch_requirements(&mut self, reqs: Requirements) -> Result<()> {
+        if reqs.needs_title() {
+            self.fetch_title()?;
+        }
+        match (
+            reqs.contains(Requirements::ANILIST_ID),
+            reqs.contains(Requirements::MAL_ID),
+        ) {
+            (true, true) => {
+                self.fetch_ids(|me| me.anilist_id.is_some() && me.mal_id.is_some())?;
+                match (self.anilist_id.is_none(), self.mal_id.is_none()) {
+                    (true, true) => Err(anyhow!("Cannot find anilist_id and mal_id")),
+                    (false, true) => Err(anyhow!("Cannot find mal_id")),
+                    (true, false) => Err(anyhow!("Cannot find anilist_id")),
+                    (false, false) => Ok(()),
+                }
+            }
+            (false, true) => {
+                self.fetch_ids(|me| me.mal_id.is_some())?;
+                if self.mal_id.is_none() {
+                    Err(anyhow!("Cannot find mal_id"))
+                } else {
+                    Ok(())
+                }
+            }
+            (true, false) => {
+                self.fetch_ids(|me| me.anilist_id.is_some())?;
+                if self.anilist_id.is_none() {
+                    Err(anyhow!("Cannot find anilist_id"))
+                } else {
+                    Ok(())
+                }
+            }
+            (false, false) => Ok(()),
+        }
+    }
+}
+
 fn usage() {
     println!(
         "USAGE: {} [--<executor>] <URL>",
@@ -376,18 +754,18 @@ fn _main() -> Result<()> {
         }
     };
 
-    let (id, epno) = parse_url(&url)?;
+    let mut anime = parse_url(&url)?;
 
     let mut defaults = Vec::new();
     let mut reprs = Vec::new();
     let mut data = Vec::new();
 
-    for ep in fetch_info(id) {
-        let Episode { number, id } = ep?;
+    for ep in fetch_info(anime.anime_id, &mut anime.slug, &mut anime.title) {
+        let (no, episode) = ep?;
 
-        defaults.push(epno.map_or(true, |epno| id == epno));
-        reprs.push(number);
-        data.push(id);
+        defaults.push(anime.episode.map_or(true, |epno| episode.id == epno));
+        reprs.push(no);
+        data.push(episode);
     }
 
     let selections = MultiSelect::with_theme(&ColorfulTheme::default())
@@ -402,7 +780,23 @@ fn _main() -> Result<()> {
     };
     selections.sort_unstable();
 
-    for (i, id) in data.into_iter().enumerate() {
+    let mut reqs = Requirements::empty();
+    for v in ex.variables() {
+        match v {
+            "mal_id" => reqs |= Requirements::MAL_ID,
+            "anilist_id" => reqs |= Requirements::ANILIST_ID,
+            "title" => reqs |= Requirements::TITLE,
+            _ => (),
+        }
+        if reqs.is_all() {
+            break;
+        }
+    }
+    if let Err(err) = anime.fetch_requirements(reqs) {
+        eprintln!("{err}");
+    }
+
+    for (i, episode) in data.into_iter().enumerate() {
         if selections.is_empty() {
             break;
         }
@@ -414,12 +808,9 @@ fn _main() -> Result<()> {
             Err(_) => continue,
         }
 
-        let Video { file, url } = fetch_video_infos(id)?;
+        let video = fetch_video_infos(episode.id)?;
 
-        let mut values = HashMap::new();
-        values.insert("url", url);
-        values.insert("file", file);
-        ex.execute(&values)?;
+        ex.execute(&EpisodeVariables::new(&anime, &video, &episode))?;
     }
 
     Ok(())
