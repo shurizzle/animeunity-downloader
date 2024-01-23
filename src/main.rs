@@ -593,12 +593,12 @@ impl AnimeContext {
             for player in soup.tag("video-player").find_all() {
                 #[derive(Debug, Deserialize)]
                 struct Info {
-                    pub title_eng: String,
+                    pub title_eng: Box<str>,
                 }
                 if let Some(anime) = player.get("anime") {
                     let Info { title_eng: title } = serde_json::from_slice(anime.as_bytes())
                         .context("Invalid player informations")?;
-                    self.title = Some(title.into());
+                    self.title = Some(title);
                     return Ok(());
                 }
             }
@@ -706,7 +706,7 @@ impl AnimeContext {
 
 fn usage() {
     println!(
-        "USAGE: {} [--<executor>] <URL>",
+        "USAGE: {} [--<executor>] <URL|ID>",
         std::env::args().next().unwrap()
     );
     let mut cfg = ProjectDirs::from("dev", "shurizzle", "AnimeUnity Downloader")

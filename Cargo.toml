@@ -3,6 +3,11 @@ name = "audown"
 version = "0.0.1"
 edition = "2021"
 
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
 [dependencies]
 ureq = "2.9.1"
 urlencoding = "2.1.3"
