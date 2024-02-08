@@ -410,7 +410,7 @@ fn parse_url(url: &str) -> Result<AnimeContext> {
             _ => false,
         };
         if !is_valid_host {
-            bail!("Invalid URL");
+            bail!("Invalid domain");
         }
     }
 
@@ -441,17 +441,19 @@ fn parse_url(url: &str) -> Result<AnimeContext> {
                 };
 
                 let episode = match segs.next() {
+                    None => None,
                     Some(e) => {
                         if segs.next().is_some() {
                             break 'err;
                         }
-                        if let Ok(ep) = e.parse() {
+                        if e.is_empty() {
+                            None
+                        } else if let Ok(ep) = e.parse() {
                             Some(ep)
                         } else {
                             break 'err;
                         }
                     }
-                    None => None,
                 };
 
                 return Ok(AnimeContext {
@@ -467,7 +469,7 @@ fn parse_url(url: &str) -> Result<AnimeContext> {
         }
     }
 
-    bail!("Invalid URL")
+    bail!("Invalid path")
 }
 
 fn fetch_embed_url(id: u64) -> Result<String> {
