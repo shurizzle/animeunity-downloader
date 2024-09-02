@@ -139,7 +139,7 @@ pub fn load() -> Result<HashMap<String, CommandExecutor>> {
         cfg.push("config.yaml");
 
         if cfg.exists() {
-            return serde_yaml::from_reader::<_, HashMap<String, CommandExecutor>>(
+            return serde_yml::from_reader::<_, HashMap<String, CommandExecutor>>(
                 File::open(cfg).context("Error while loading configuration")?,
             )
             .context("Error in configuration file");

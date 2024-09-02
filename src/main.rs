@@ -4,8 +4,11 @@ pub(crate) mod template;
 use std::fmt;
 
 use anyhow::{anyhow, bail, Context, Result};
+#[cfg(not(feature = "v8"))]
+use boa_engine::{js_str, value::JsValue, Source};
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use directories::ProjectDirs;
+#[cfg(feature = "v8")]
 use mini_v8::{FromValue, MiniV8};
 use serde::Deserialize;
 use template::Variables;
@@ -480,6 +483,7 @@ fn fetch_embed_url(id: u64) -> Result<String> {
     )
 }
 
+#[cfg(feature = "v8")]
 pub fn type_name(value: &mini_v8::Value) -> &'static str {
     use mini_v8::Value;
     match value {
@@ -495,6 +499,7 @@ pub fn type_name(value: &mini_v8::Value) -> &'static str {
     }
 }
 
+#[cfg(feature = "v8")]
 impl FromValue for Video {
     fn from_value(value: mini_v8::Value, mv8: &MiniV8) -> mini_v8::Result<Self> {
         let value = match value {
@@ -522,17 +527,11 @@ impl FromValue for Video {
     }
 }
 
-fn extract_video_infos(code: String) -> Result<Video> {
+#[cfg(feature = "v8")]
+fn extract_video_infos(mut code: String) -> Result<Video> {
     let mv8 = MiniV8::new();
-    match mv8.eval(code) {
-        Ok(()) => (),
-        Err(err) => {
-            bail!("{}", err)
-        }
-    }
-    match mv8.eval::<_, Video>(
-        "({file:window.video.filename||window.video.name,url:window.downloadUrl})",
-    ) {
+    code.push_str("\n({file:window.video.filename||window.video.name,url:window.downloadUrl})");
+    match mv8.eval::<_, Video>(code) {
         Ok(x) => {
             if x.url.is_empty() {
                 bail!("url not found");
@@ -548,6 +547,44 @@ fn extract_video_infos(code: String) -> Result<Video> {
     }
 }
 
+#[cfg(not(feature = "v8"))]
+fn extract_video_infos(mut code: String) -> Result<Video> {
+    let mut ctx = boa_engine::Context::default();
+    code.push_str("\n({file:window.video.filename||window.video.name,url:window.downloadUrl})");
+    println!("{code}");
+    match ctx
+        .eval(Source::from_bytes(&code))
+        .map_err(|e| anyhow!("{e}"))?
+    {
+        JsValue::Object(o) => {
+            let url = match o
+                .get(js_str!("url"), &mut ctx)
+                .map_err(|e| anyhow!("{e}"))?
+            {
+                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
+                _ => bail!("url not found"),
+            };
+            if url.is_empty() {
+                bail!("url not found");
+            }
+
+            let file = match o
+                .get(js_str!("file"), &mut ctx)
+                .map_err(|e| anyhow!("{e}"))?
+            {
+                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
+                _ => bail!("file not found"),
+            };
+            if file.is_empty() {
+                bail!("file not found");
+            }
+
+            Ok(Video { file, url })
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn fetch_video_infos(id: u64) -> Result<Video> {
     let body = ureq::get(&fetch_embed_url(id)?).call()?.into_string()?;
 
@@ -555,7 +592,7 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
         use soup::prelude::*;
 
         let soup = Soup::new(&body);
-        let mut code = String::from("const window={};");
+        let mut code = String::from("const window=this||{};");
         for script in soup.tag("script").find_all() {
             if script.get("src").is_none() {
                 let text = script.text();
