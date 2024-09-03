@@ -1,4 +1,5 @@
 mod config;
+mod http;
 mod js;
 pub(crate) mod template;
 
@@ -249,11 +250,7 @@ fn fetch_info<'a>(
             id, start, stop
         );
 
-        let body = ureq::get(&url)
-            .call()
-            .context("Invalid informations")?
-            .into_string()
-            .context("Invalid informations")?;
+        let body = http::get(&url).context("Invalid informations")?;
 
         match (slug.is_none(), title.is_none()) {
             (true, true) => parse_info::<InfoSlugTitle>(&body),
@@ -473,15 +470,11 @@ fn parse_url(url: &str) -> Result<AnimeContext> {
 }
 
 fn fetch_embed_url(id: u64) -> Result<String> {
-    Ok(
-        ureq::get(&format!("https://www.animeunity.to/embed-url/{id}"))
-            .call()?
-            .into_string()?,
-    )
+    http::get(&format!("https://www.animeunity.to/embed-url/{id}"))
 }
 
 fn fetch_video_infos(id: u64) -> Result<Video> {
-    let body = ureq::get(&fetch_embed_url(id)?).call()?.into_string()?;
+    let body = http::get(&fetch_embed_url(id)?)?;
 
     let script = {
         use soup::prelude::*;
@@ -514,11 +507,7 @@ impl AnimeContext {
                 .ok_or_else(|| anyhow!("cannot find slug"))?
         );
 
-        let body = ureq::get(&url)
-            .call()
-            .context("Invalid informations")?
-            .into_string()
-            .context("Invalid informations")?;
+        let body = http::get(&url).context("Invalid informations")?;
 
         {
             use soup::prelude::*;
@@ -555,11 +544,7 @@ impl AnimeContext {
             )
         );
 
-        let body = ureq::get(&url)
-            .call()
-            .context("Invalid informations")?
-            .into_string()
-            .context("Invalid informations")?;
+        let body = http::get(&url).context("Invalid informations")?;
 
         {
             use soup::prelude::*;
@@ -752,7 +737,7 @@ fn _main() -> Result<()> {
 
 fn main() {
     if let Err(err) = _main() {
-        println!("{}", err);
+        eprintln!("{}", err);
         std::process::exit(1);
     }
 }
