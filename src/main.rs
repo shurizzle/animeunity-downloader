@@ -475,130 +475,156 @@ fn fetch_embed_url(id: u64) -> Result<String> {
     http::get(&format!("https://www.animeunity.to/embed-url/{id}"))
 }
 
-fn dom_filter<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Vec<T> {
-    fn recur<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>, acc: &mut Vec<T>) {
-        let node = match f(node) {
-            Ok(e) => {
-                acc.push(e);
-                return;
-            }
-            Err(node) => node,
-        };
+pub struct DomIterator(Vec<Rc<Node>>);
 
-        if !matches!(node.data, NodeData::Document | NodeData::Element { .. }) {
-            return;
-        }
-        for child in node.children.replace(Vec::new()) {
-            recur(child, f, acc);
-        }
+impl DomIterator {
+    pub fn new(node: Rc<Node>) -> Self {
+        Self(vec![node])
     }
 
-    let mut acc = Vec::new();
-    recur(node, f, &mut acc);
-    acc
-}
-
-fn dom_first<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Option<T> {
-    let node = match f(node) {
-        Ok(e) => return Some(e),
-        Err(node) => node,
-    };
-
-    if !matches!(node.data, NodeData::Document | NodeData::Element { .. }) {
-        return None;
-    }
-    for child in node.children.replace(Vec::new()) {
-        if let Some(e) = dom_first(child, f) {
-            return Some(e);
+    pub fn next<T, F>(&mut self, f: F) -> Option<T>
+    where
+        F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
+    {
+        while let Some(node) = self.0.pop() {
+            let node = match f(node) {
+                Ok(e) => return Some(e),
+                Err(node) => node,
+            };
+            self.0
+                .extend(node.children.replace(Vec::new()).into_iter().rev());
         }
+        self.0.clear();
+        None
     }
-    None
+
+    pub fn reduce<T, F>(&mut self, f: F) -> Vec<T>
+    where
+        F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
+    {
+        let mut acc = Vec::new();
+        while let Some(e) = self.next(&f) {
+            acc.push(e);
+        }
+        acc
+    }
 }
 
 fn extract_text(node: Rc<Node>) -> String {
-    fn recur(node: Rc<Node>, acc: &mut String) {
+    let mut acc = String::new();
+    let mut it = DomIterator::new(node);
+    while let Some(content) = it.next(|node| {
         if let NodeData::Text { ref contents } = node.data {
-            let content = contents.replace(Default::default());
-            if acc.is_empty() {
-                *acc = content.to_string();
-            } else {
-                acc.push_str(&content);
-            }
+            Ok(contents.replace(Default::default()))
+        } else {
+            Err(node)
         }
-
-        for child in node.children.replace(Vec::new()) {
-            recur(child, acc);
+    }) {
+        if acc.is_empty() {
+            acc = content.to_string();
+        } else {
+            acc.push_str(&content);
         }
     }
-
-    let mut acc = String::new();
-    recur(node, &mut acc);
     acc
 }
 
-fn html_filter<T>(body: &[u8], f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Vec<T> {
+fn html_iter(body: &[u8]) -> DomIterator {
     use html5ever::{parse_document, tendril::TendrilSink};
 
     let dom = parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
         .from_utf8()
         .one(body);
-    dom_filter(dom.document, f)
+    DomIterator::new(dom.document)
 }
 
-fn html_first<T>(body: &[u8], f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Option<T> {
-    use html5ever::{parse_document, tendril::TendrilSink};
+fn html_filter<T, F>(body: &[u8], f: F) -> Vec<T>
+where
+    F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
+{
+    html_iter(body).reduce(f)
+}
 
-    let dom = parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
-        .from_utf8()
-        .one(body);
-    dom_first(dom.document, f)
+fn html_first<T, F>(body: &[u8], f: F) -> Option<T>
+where
+    F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
+{
+    html_iter(body).next(f)
 }
 
 fn fetch_video_infos(id: u64) -> Result<Video> {
-    let body = http::get(&fetch_embed_url(id)?)?;
-
-    let script = {
-        fn filter_script(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
-            match node.data {
-                NodeData::Element {
-                    ref name,
-                    ref attrs,
-                    ..
-                } => {
-                    if name.borrow().local.as_bytes() != b"script" {
-                        return Err(node);
-                    }
-                    if attrs
-                        .borrow()
-                        .iter()
-                        .any(|a| a.name.local.as_bytes() == b"src")
-                    {
-                        return Err(node);
-                    }
-                    let mut content = extract_text(node);
-                    content.trim_in_place();
-                    if content.is_empty() {
-                        Err(Node::new(NodeData::Comment {
-                            contents: "".into(),
-                        }))
-                    } else {
-                        Ok(content.into_boxed_str())
-                    }
+    fn filter_script(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
+        match node.data {
+            NodeData::Element {
+                ref name,
+                ref attrs,
+                ..
+            } => {
+                if name.borrow().local.as_bytes() != b"script" {
+                    return Err(node);
                 }
-                _ => Err(node),
+                if attrs
+                    .borrow()
+                    .iter()
+                    .any(|a| a.name.local.as_bytes() == b"src")
+                {
+                    return Err(node);
+                }
+                let mut content = extract_text(node);
+                content.trim_in_place();
+                if content.is_empty() {
+                    Err(Node::new(NodeData::Comment {
+                        contents: "".into(),
+                    }))
+                } else {
+                    Ok(content.into_boxed_str())
+                }
+            }
+            _ => Err(node),
+        }
+    }
+
+    js::extract_video_infos(
+        html_filter(http::get(&fetch_embed_url(id)?)?.as_bytes(), filter_script)
+            .into_iter()
+            .fold(
+                String::from("const window=this||globalThis||{};"),
+                |mut code, script| {
+                    code.push_str("try{");
+                    code.push_str(&script);
+                    code.push_str("}catch(____e){}\n");
+                    code
+                },
+            ),
+    )
+}
+
+fn filter_tag_attr<'a>(
+    tag: &'a str,
+    attr: &'a str,
+) -> impl Fn(Rc<Node>) -> Result<Box<str>, Rc<Node>> + 'a {
+    move |node: Rc<Node>| match node.data {
+        NodeData::Element {
+            ref name,
+            ref attrs,
+            ..
+        } => {
+            if name.borrow().local.as_bytes() != tag.as_bytes() {
+                return Err(node);
+            }
+            if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
+                a.name.local.as_bytes() == attr.as_bytes()
+                    && !a.value.as_bytes().trim_ascii().is_empty()
+            }) {
+                Ok(a.value.to_string().into_boxed_str())
+            } else {
+                Err(Node::new(NodeData::Comment {
+                    contents: "".into(),
+                }))
             }
         }
-
-        let mut code = String::from("const window=this||globalThis||{};");
-        for script in html_filter(body.as_bytes(), filter_script) {
-            code.push_str("try{");
-            code.push_str(&script);
-            code.push_str("}catch(____e){}\n");
-        }
-        code
-    };
-
-    js::extract_video_infos(script)
+        _ => Err(node),
+    }
 }
 
 impl AnimeContext {
@@ -613,42 +639,15 @@ impl AnimeContext {
 
         let body = http::get(&url).context("Invalid informations")?;
 
-        {
-            fn filter_anime(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
-                match node.data {
-                    NodeData::Element {
-                        ref name,
-                        ref attrs,
-                        ..
-                    } => {
-                        if name.borrow().local.as_bytes() != b"video-player" {
-                            return Err(node);
-                        }
-                        if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
-                            a.name.local.as_bytes() == b"anime"
-                                && !a.value.as_bytes().trim_ascii().is_empty()
-                        }) {
-                            Ok(a.value.to_string().into_boxed_str())
-                        } else {
-                            Err(Node::new(NodeData::Comment {
-                                contents: "".into(),
-                            }))
-                        }
-                    }
-                    _ => Err(node),
-                }
+        if let Some(anime) = html_first(body.as_bytes(), filter_tag_attr("video-player", "anime")) {
+            #[derive(Debug, Deserialize)]
+            struct Info {
+                pub title_eng: Box<str>,
             }
-
-            if let Some(anime) = html_first(body.as_bytes(), filter_anime) {
-                #[derive(Debug, Deserialize)]
-                struct Info {
-                    pub title_eng: Box<str>,
-                }
-                let Info { title_eng: title } = serde_json::from_slice(anime.as_bytes())
-                    .context("Invalid player informations")?;
-                self.title = Some(title);
-                return Ok(());
-            }
+            let Info { title_eng: title } =
+                serde_json::from_slice(anime.as_bytes()).context("Invalid player informations")?;
+            self.title = Some(title);
+            return Ok(());
         }
 
         bail!("Cannot find anime title");
@@ -670,57 +669,30 @@ impl AnimeContext {
 
         let body = http::get(&url).context("Invalid informations")?;
 
-        {
-            fn filter_anime(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
-                match node.data {
-                    NodeData::Element {
-                        ref name,
-                        ref attrs,
-                        ..
-                    } => {
-                        if name.borrow().local.as_bytes() != b"archivio" {
-                            return Err(node);
-                        }
-                        if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
-                            a.name.local.as_bytes() == b"records"
-                                && !a.value.as_bytes().trim_ascii().is_empty()
-                        }) {
-                            Ok(a.value.to_string().into_boxed_str())
-                        } else {
-                            Err(Node::new(NodeData::Comment {
-                                contents: "".into(),
-                            }))
-                        }
-                    }
-                    _ => Err(node),
-                }
+        if let Some(anime) = html_first(body.as_bytes(), filter_tag_attr("archivio", "records")) {
+            #[derive(Deserialize)]
+            struct Info {
+                pub id: u64,
+                pub anilist_id: Option<u64>,
+                pub mal_id: Option<u64>,
             }
-
-            if let Some(anime) = html_first(body.as_bytes(), filter_anime) {
-                #[derive(Deserialize)]
-                struct Info {
-                    pub id: u64,
-                    pub anilist_id: Option<u64>,
-                    pub mal_id: Option<u64>,
-                }
-                let infos: Vec<Info> = serde_json::from_slice(anime.as_bytes())
-                    .context("Invalid player informations")?;
-                for Info {
-                    id,
-                    anilist_id,
-                    mal_id,
-                } in infos
-                {
-                    if id == self.anime_id {
-                        if let Some(anilist_id) = anilist_id {
-                            self.anilist_id = Some(anilist_id);
-                        }
-                        if let Some(mal_id) = mal_id {
-                            self.mal_id = Some(mal_id);
-                        }
-                        if f(self) {
-                            return Ok(());
-                        }
+            let infos: Vec<Info> =
+                serde_json::from_slice(anime.as_bytes()).context("Invalid player informations")?;
+            for Info {
+                id,
+                anilist_id,
+                mal_id,
+            } in infos
+            {
+                if id == self.anime_id {
+                    if let Some(anilist_id) = anilist_id {
+                        self.anilist_id = Some(anilist_id);
+                    }
+                    if let Some(mal_id) = mal_id {
+                        self.mal_id = Some(mal_id);
+                    }
+                    if f(self) {
+                        return Ok(());
                     }
                 }
             }
