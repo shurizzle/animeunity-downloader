@@ -636,9 +636,25 @@ fn usage() {
     println!("config: {}", cfg.display());
 }
 
+fn load_executor(name: Option<&str>) -> Result<config::Executor> {
+    let Some(name) = name else {
+        return Ok(config::load()?
+            .remove("default")
+            .map(config::Executor::Command)
+            .unwrap_or(config::Executor::Print));
+    };
+
+    if let Some(executor) = config::load()?.remove(name).map(config::Executor::Command) {
+        Ok(executor)
+    } else {
+        println!("Invalid executor {:?}", name);
+        std::process::exit(1);
+    }
+}
+
 fn _main() -> Result<()> {
     let (url, ex) = match std::env::args().len() {
-        2 => (std::env::args().nth(1).unwrap(), config::Executor::Print),
+        2 => (std::env::args().nth(1).unwrap(), load_executor(None)?),
         3 => {
             let (mut e, mut url) = {
                 let mut it = std::env::args().skip(1);
@@ -649,17 +665,8 @@ fn _main() -> Result<()> {
                 std::mem::swap(&mut e, &mut url);
             }
 
-            if e.starts_with("--") {
-                e.remove(0);
-                e.remove(0);
-                let executor = if let Some(executor) =
-                    config::load()?.remove(&e).map(config::Executor::Command)
-                {
-                    executor
-                } else {
-                    println!("Invalid executor {:?}", e);
-                    std::process::exit(1);
-                };
+            if let Some(e) = e.strip_prefix("--") {
+                let executor = load_executor(if e == "default" { None } else { Some(e) })?;
 
                 (url, executor)
             } else {
