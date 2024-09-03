@@ -9,12 +9,15 @@ strip = true
 codegen-units = 1
 
 [features]
-default = ["v8", "ureq-native-tls"]
+default = ["quickjs-ng", "ureq-native-tls"]
 boa = ["dep:boa_engine"]
 v8 = ["dep:mini-v8"]
+quickjs = ["dep:quickjs_runtime", "quickjs_runtime/bellard"]
+quickjs-ng = ["dep:quickjs_runtime", "quickjs_runtime/quickjs-ng"]
 ureq-native-tls = ["ureq/native-certs", "ureq/native-tls"]
 
 [dependencies]
+cfg-if = "1.0.0"
 ureq = { version = "2.10.1", default-features = true }
 urlencoding = "2.1.3"
 serde = { version = "1.0.209", features = ["derive"] }
@@ -28,5 +31,6 @@ directories = "5.0.1"
 soup = { version = "0.5.1", default-features = false }
 mini-v8 = { version = "0.4.1", optional = true }
 boa_engine = { version = "0.19.0", optional = true }
+quickjs_runtime = { version = "0.13.4", default-features = false, optional = true }
 nom = "7.1.3"
 bitflags = "2.6.0"

@@ -1,15 +1,12 @@
 mod config;
+mod js;
 pub(crate) mod template;
 
 use std::fmt;
 
 use anyhow::{anyhow, bail, Context, Result};
-#[cfg(not(feature = "v8"))]
-use boa_engine::{js_str, value::JsValue, Source};
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use directories::ProjectDirs;
-#[cfg(feature = "v8")]
-use mini_v8::{FromValue, MiniV8};
 use serde::Deserialize;
 use template::Variables;
 use urlencoding::Encoded;
@@ -483,108 +480,6 @@ fn fetch_embed_url(id: u64) -> Result<String> {
     )
 }
 
-#[cfg(feature = "v8")]
-pub fn type_name(value: &mini_v8::Value) -> &'static str {
-    use mini_v8::Value;
-    match value {
-        Value::Undefined => "undefined",
-        Value::Null => "null",
-        Value::Boolean(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::Date(_) => "date",
-        Value::Function(_) => "function",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-        Value::String(_) => "string",
-    }
-}
-
-#[cfg(feature = "v8")]
-impl FromValue for Video {
-    fn from_value(value: mini_v8::Value, mv8: &MiniV8) -> mini_v8::Result<Self> {
-        let value = match value {
-            mini_v8::Value::Object(v) => v,
-            _ => {
-                return Err(mini_v8::Error::FromJsConversionError {
-                    from: type_name(&value),
-                    to: "Video",
-                })
-            }
-        };
-
-        let file = value
-            .get::<_, mini_v8::Value>("file")?
-            .coerce_string(mv8)?
-            .to_string()
-            .into_boxed_str();
-        let url = value
-            .get::<_, mini_v8::Value>("url")?
-            .coerce_string(mv8)?
-            .to_string()
-            .into_boxed_str();
-
-        Ok(Self { file, url })
-    }
-}
-
-#[cfg(feature = "v8")]
-fn extract_video_infos(mut code: String) -> Result<Video> {
-    let mv8 = MiniV8::new();
-    code.push_str("\n({file:window.video.filename||window.video.name,url:window.downloadUrl})");
-    match mv8.eval::<_, Video>(code) {
-        Ok(x) => {
-            if x.url.is_empty() {
-                bail!("url not found");
-            }
-            if x.file.is_empty() {
-                bail!("file not found");
-            }
-            Ok(x)
-        }
-        Err(err) => {
-            bail!("{}", err)
-        }
-    }
-}
-
-#[cfg(not(feature = "v8"))]
-fn extract_video_infos(mut code: String) -> Result<Video> {
-    let mut ctx = boa_engine::Context::default();
-    code.push_str("\n({file:window.video.filename||window.video.name,url:window.downloadUrl})");
-    println!("{code}");
-    match ctx
-        .eval(Source::from_bytes(&code))
-        .map_err(|e| anyhow!("{e}"))?
-    {
-        JsValue::Object(o) => {
-            let url = match o
-                .get(js_str!("url"), &mut ctx)
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
-                _ => bail!("url not found"),
-            };
-            if url.is_empty() {
-                bail!("url not found");
-            }
-
-            let file = match o
-                .get(js_str!("file"), &mut ctx)
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
-                _ => bail!("file not found"),
-            };
-            if file.is_empty() {
-                bail!("file not found");
-            }
-
-            Ok(Video { file, url })
-        }
-        _ => unreachable!(),
-    }
-}
-
 fn fetch_video_infos(id: u64) -> Result<Video> {
     let body = ureq::get(&fetch_embed_url(id)?).call()?.into_string()?;
 
@@ -592,7 +487,7 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
         use soup::prelude::*;
 
         let soup = Soup::new(&body);
-        let mut code = String::from("const window=this||{};");
+        let mut code = String::from("const window=this||globalThis||{};");
         for script in soup.tag("script").find_all() {
             if script.get("src").is_none() {
                 let text = script.text();
@@ -606,7 +501,7 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
         code
     };
 
-    extract_video_infos(script)
+    js::extract_video_infos(script)
 }
 
 impl AnimeContext {
