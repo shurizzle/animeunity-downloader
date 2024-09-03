@@ -3,13 +3,15 @@ mod http;
 mod js;
 pub(crate) mod template;
 
-use std::fmt;
+use std::{borrow::Borrow, fmt, rc::Rc};
 
 use anyhow::{anyhow, bail, Context, Result};
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use directories::ProjectDirs;
+use markup5ever_rcdom::{Node, NodeData};
 use serde::Deserialize;
 use template::Variables;
+use trim_in_place::TrimInPlace;
 use urlencoding::Encoded;
 
 #[derive(Debug)]
@@ -473,23 +475,125 @@ fn fetch_embed_url(id: u64) -> Result<String> {
     http::get(&format!("https://www.animeunity.to/embed-url/{id}"))
 }
 
+fn dom_filter<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Vec<T> {
+    fn recur<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>, acc: &mut Vec<T>) {
+        let node = match f(node) {
+            Ok(e) => {
+                acc.push(e);
+                return;
+            }
+            Err(node) => node,
+        };
+
+        if !matches!(node.data, NodeData::Document | NodeData::Element { .. }) {
+            return;
+        }
+        for child in node.children.replace(Vec::new()) {
+            recur(child, f, acc);
+        }
+    }
+
+    let mut acc = Vec::new();
+    recur(node, f, &mut acc);
+    acc
+}
+
+fn dom_first<T>(node: Rc<Node>, f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Option<T> {
+    let node = match f(node) {
+        Ok(e) => return Some(e),
+        Err(node) => node,
+    };
+
+    if !matches!(node.data, NodeData::Document | NodeData::Element { .. }) {
+        return None;
+    }
+    for child in node.children.replace(Vec::new()) {
+        if let Some(e) = dom_first(child, f) {
+            return Some(e);
+        }
+    }
+    None
+}
+
+fn extract_text(node: Rc<Node>) -> String {
+    fn recur(node: Rc<Node>, acc: &mut String) {
+        if let NodeData::Text { ref contents } = node.data {
+            let content = contents.replace(Default::default());
+            if acc.is_empty() {
+                *acc = content.to_string();
+            } else {
+                acc.push_str(&content);
+            }
+        }
+
+        for child in node.children.replace(Vec::new()) {
+            recur(child, acc);
+        }
+    }
+
+    let mut acc = String::new();
+    recur(node, &mut acc);
+    acc
+}
+
+fn html_filter<T>(body: &[u8], f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Vec<T> {
+    use html5ever::{parse_document, tendril::TendrilSink};
+
+    let dom = parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
+        .from_utf8()
+        .one(body);
+    dom_filter(dom.document, f)
+}
+
+fn html_first<T>(body: &[u8], f: fn(Rc<Node>) -> Result<T, Rc<Node>>) -> Option<T> {
+    use html5ever::{parse_document, tendril::TendrilSink};
+
+    let dom = parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
+        .from_utf8()
+        .one(body);
+    dom_first(dom.document, f)
+}
+
 fn fetch_video_infos(id: u64) -> Result<Video> {
     let body = http::get(&fetch_embed_url(id)?)?;
 
     let script = {
-        use soup::prelude::*;
-
-        let soup = Soup::new(&body);
-        let mut code = String::from("const window=this||globalThis||{};");
-        for script in soup.tag("script").find_all() {
-            if script.get("src").is_none() {
-                let text = script.text();
-                let text = text.trim();
-                code.push_str("try{");
-                code.push_str(text);
-                code.push_str("}catch(____e){}");
-                code.push('\n');
+        fn filter_script(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
+            match node.data {
+                NodeData::Element {
+                    ref name,
+                    ref attrs,
+                    ..
+                } => {
+                    if name.borrow().local.as_bytes() != b"script" {
+                        return Err(node);
+                    }
+                    if attrs
+                        .borrow()
+                        .iter()
+                        .any(|a| a.name.local.as_bytes() == b"src")
+                    {
+                        return Err(node);
+                    }
+                    let mut content = extract_text(node);
+                    content.trim_in_place();
+                    if content.is_empty() {
+                        Err(Node::new(NodeData::Comment {
+                            contents: "".into(),
+                        }))
+                    } else {
+                        Ok(content.into_boxed_str())
+                    }
+                }
+                _ => Err(node),
             }
+        }
+
+        let mut code = String::from("const window=this||globalThis||{};");
+        for script in html_filter(body.as_bytes(), filter_script) {
+            code.push_str("try{");
+            code.push_str(&script);
+            code.push_str("}catch(____e){}\n");
         }
         code
     };
@@ -510,20 +614,40 @@ impl AnimeContext {
         let body = http::get(&url).context("Invalid informations")?;
 
         {
-            use soup::prelude::*;
+            fn filter_anime(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
+                match node.data {
+                    NodeData::Element {
+                        ref name,
+                        ref attrs,
+                        ..
+                    } => {
+                        if name.borrow().local.as_bytes() != b"video-player" {
+                            return Err(node);
+                        }
+                        if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
+                            a.name.local.as_bytes() == b"anime"
+                                && !a.value.as_bytes().trim_ascii().is_empty()
+                        }) {
+                            Ok(a.value.to_string().into_boxed_str())
+                        } else {
+                            Err(Node::new(NodeData::Comment {
+                                contents: "".into(),
+                            }))
+                        }
+                    }
+                    _ => Err(node),
+                }
+            }
 
-            let soup = Soup::new(&body);
-            for player in soup.tag("video-player").find_all() {
+            if let Some(anime) = html_first(body.as_bytes(), filter_anime) {
                 #[derive(Debug, Deserialize)]
                 struct Info {
                     pub title_eng: Box<str>,
                 }
-                if let Some(anime) = player.get("anime") {
-                    let Info { title_eng: title } = serde_json::from_slice(anime.as_bytes())
-                        .context("Invalid player informations")?;
-                    self.title = Some(title);
-                    return Ok(());
-                }
+                let Info { title_eng: title } = serde_json::from_slice(anime.as_bytes())
+                    .context("Invalid player informations")?;
+                self.title = Some(title);
+                return Ok(());
             }
         }
 
@@ -547,35 +671,55 @@ impl AnimeContext {
         let body = http::get(&url).context("Invalid informations")?;
 
         {
-            use soup::prelude::*;
+            fn filter_anime(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
+                match node.data {
+                    NodeData::Element {
+                        ref name,
+                        ref attrs,
+                        ..
+                    } => {
+                        if name.borrow().local.as_bytes() != b"archivio" {
+                            return Err(node);
+                        }
+                        if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
+                            a.name.local.as_bytes() == b"records"
+                                && !a.value.as_bytes().trim_ascii().is_empty()
+                        }) {
+                            Ok(a.value.to_string().into_boxed_str())
+                        } else {
+                            Err(Node::new(NodeData::Comment {
+                                contents: "".into(),
+                            }))
+                        }
+                    }
+                    _ => Err(node),
+                }
+            }
 
-            let soup = Soup::new(&body);
-            for player in soup.tag("archivio").find_all() {
+            if let Some(anime) = html_first(body.as_bytes(), filter_anime) {
                 #[derive(Deserialize)]
                 struct Info {
                     pub id: u64,
                     pub anilist_id: Option<u64>,
                     pub mal_id: Option<u64>,
                 }
-                if let Some(anime) = player.get("records") {
-                    let infos: Vec<Info> = serde_json::from_slice(anime.as_bytes())
-                        .context("Invalid player informations")?;
-                    for Info {
-                        id,
-                        anilist_id,
-                        mal_id,
-                    } in infos
-                    {
-                        if id == self.anime_id {
-                            if let Some(anilist_id) = anilist_id {
-                                self.anilist_id = Some(anilist_id);
-                            }
-                            if let Some(mal_id) = mal_id {
-                                self.mal_id = Some(mal_id);
-                            }
-                            if f(self) {
-                                return Ok(());
-                            }
+                let infos: Vec<Info> = serde_json::from_slice(anime.as_bytes())
+                    .context("Invalid player informations")?;
+                for Info {
+                    id,
+                    anilist_id,
+                    mal_id,
+                } in infos
+                {
+                    if id == self.anime_id {
+                        if let Some(anilist_id) = anilist_id {
+                            self.anilist_id = Some(anilist_id);
+                        }
+                        if let Some(mal_id) = mal_id {
+                            self.mal_id = Some(mal_id);
+                        }
+                        if f(self) {
+                            return Ok(());
                         }
                     }
                 }
