@@ -475,14 +475,14 @@ fn fetch_embed_url(id: u64) -> Result<String> {
     http::get(&format!("https://www.animeunity.to/embed-url/{id}"))
 }
 
-pub struct DomIterator(Vec<Rc<Node>>);
+pub struct DomCursor(Vec<Rc<Node>>);
 
-impl DomIterator {
+impl DomCursor {
     pub fn new(node: Rc<Node>) -> Self {
         Self(vec![node])
     }
 
-    pub fn next<T, F>(&mut self, f: F) -> Option<T>
+    pub fn next<F, T>(&mut self, f: F) -> Option<T>
     where
         F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
     {
@@ -491,31 +491,48 @@ impl DomIterator {
                 Ok(e) => return Some(e),
                 Err(node) => node,
             };
-            self.0
-                .extend(node.children.replace(Vec::new()).into_iter().rev());
+            self.0.extend(node.children.take().into_iter().rev());
         }
         self.0.clear();
         None
     }
 
-    pub fn reduce<T, F>(&mut self, f: F) -> Vec<T>
+    pub fn into_iter<F, T>(self, f: F) -> DomIterator<F>
     where
         F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
     {
-        let mut acc = Vec::new();
-        while let Some(e) = self.next(&f) {
-            acc.push(e);
-        }
-        acc
+        DomIterator::from_raw_parts(self, f)
+    }
+}
+
+pub struct DomIterator<F> {
+    cursor: DomCursor,
+    f: F,
+}
+
+impl<F> DomIterator<F> {
+    pub fn new(node: Rc<Node>, f: F) -> Self {
+        Self::from_raw_parts(DomCursor::new(node), f)
+    }
+
+    pub fn from_raw_parts(cursor: DomCursor, f: F) -> Self {
+        Self { cursor, f }
+    }
+}
+
+impl<F: Fn(Rc<Node>) -> Result<T, Rc<Node>>, T> Iterator for DomIterator<F> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next(&self.f)
     }
 }
 
 fn extract_text(node: Rc<Node>) -> String {
     let mut acc = String::new();
-    let mut it = DomIterator::new(node);
-    while let Some(content) = it.next(|node| {
+    for content in DomIterator::new(node, |node: Rc<Node>| {
         if let NodeData::Text { ref contents } = node.data {
-            Ok(contents.replace(Default::default()))
+            Ok(contents.take())
         } else {
             Err(node)
         }
@@ -529,31 +546,31 @@ fn extract_text(node: Rc<Node>) -> String {
     acc
 }
 
-fn html_iter(body: &[u8]) -> DomIterator {
+fn html_cursor(body: &[u8]) -> DomCursor {
     use html5ever::{parse_document, tendril::TendrilSink};
 
     let dom = parse_document(markup5ever_rcdom::RcDom::default(), Default::default())
         .from_utf8()
         .one(body);
-    DomIterator::new(dom.document)
+    DomCursor::new(dom.document)
 }
 
-fn html_filter<T, F>(body: &[u8], f: F) -> Vec<T>
+fn html_filter<T, F>(body: &[u8], f: F) -> DomIterator<F>
 where
     F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
 {
-    html_iter(body).reduce(f)
+    html_cursor(body).into_iter(f)
 }
 
 fn html_first<T, F>(body: &[u8], f: F) -> Option<T>
 where
     F: Fn(Rc<Node>) -> Result<T, Rc<Node>>,
 {
-    html_iter(body).next(f)
+    html_cursor(body).next(f)
 }
 
 fn fetch_video_infos(id: u64) -> Result<Video> {
-    fn filter_script(node: Rc<Node>) -> Result<Box<str>, Rc<Node>> {
+    fn filter_script(node: Rc<Node>) -> Result<String, Rc<Node>> {
         match node.data {
             NodeData::Element {
                 ref name,
@@ -570,15 +587,7 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
                 {
                     return Err(node);
                 }
-                let mut content = extract_text(node);
-                content.trim_in_place();
-                if content.is_empty() {
-                    Err(Node::new(NodeData::Comment {
-                        contents: "".into(),
-                    }))
-                } else {
-                    Ok(content.into_boxed_str())
-                }
+                Ok(extract_text(node))
             }
             _ => Err(node),
         }
@@ -586,7 +595,11 @@ fn fetch_video_infos(id: u64) -> Result<Video> {
 
     js::extract_video_infos(
         html_filter(http::get(&fetch_embed_url(id)?)?.as_bytes(), filter_script)
-            .into_iter()
+            .map(|mut s| {
+                s.trim_in_place();
+                s
+            })
+            .filter(|s| !s.is_empty())
             .fold(
                 String::from("const window=this||globalThis||{};"),
                 |mut code, script| {
@@ -612,7 +625,7 @@ fn filter_tag_attr<'a>(
             if name.borrow().local.as_bytes() != tag.as_bytes() {
                 return Err(node);
             }
-            if let Some(a) = attrs.replace(Vec::new()).into_iter().find(|a| {
+            if let Some(a) = attrs.take().into_iter().find(|a| {
                 a.name.local.as_bytes() == attr.as_bytes()
                     && !a.value.as_bytes().trim_ascii().is_empty()
             }) {
