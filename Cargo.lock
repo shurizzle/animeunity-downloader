@@ -678,9 +678,9 @@ checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
 name = "hirofa-quickjs-sys"
-version = "0.4.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0dbc202fa2411da662ce44875d1f5f6603dec39d5d1c17644871b48c46db779"
+checksum = "d6ba8ee2ce32c501891b744c5b44aa4e870f85662228fbf113e5d3e22bc72630"
 dependencies = [
  "cc",
  "copy_dir",
@@ -1441,9 +1441,9 @@ dependencies = [
 
 [[package]]
 name = "quickjs_runtime"
-version = "0.13.4"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f3288e00fe9a69affc37424da9bef9d19bf5327557fc6d0afeb62889c7b6677"
+checksum = "fef6f75f2ee1a498cc327e8af35ad954bc393f55fe5b7fbeda0645392ca1fbb6"
 dependencies = [
  "backtrace",
  "flume",
