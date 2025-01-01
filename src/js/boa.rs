@@ -5,7 +5,6 @@ use crate::Video;
 
 pub fn extract_video_infos(code: &str) -> Result<Video> {
     let mut ctx = Context::default();
-    println!("{code}");
     match ctx
         .eval(Source::from_bytes(&code))
         .map_err(|e| anyhow!("{e}"))?
