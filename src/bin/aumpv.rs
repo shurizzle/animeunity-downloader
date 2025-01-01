@@ -18,7 +18,7 @@ impl<'se> serde::Serialize for Url<'se> {
     {
         serde::Serialize::serialize::<S>(
             &format_args!(
-                "https://www.animeunity.to/anime/{}-{}/{}",
+                "https://www.animeunity.so/anime/{}-{}/{}",
                 self.anime_id, self.slug, self.ep,
             ),
             serializer,

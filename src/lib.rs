@@ -45,7 +45,7 @@ impl Requirements {
 impl AnimeContext {
     fn fetch_title(&mut self) -> Result<()> {
         let url = format!(
-            "https://www.animeunity.to/anime/{}-{}",
+            "https://www.animeunity.so/anime/{}-{}",
             self.anime_id,
             self.slug
                 .as_ref()
@@ -76,7 +76,7 @@ impl AnimeContext {
         F: FnMut(&mut AnimeContext) -> bool,
     {
         let url = format!(
-            "https://www.animeunity.to/archivio/?title={}",
+            "https://www.animeunity.so/archivio/?title={}",
             Encoded(
                 self.title
                     .as_ref()
@@ -175,7 +175,12 @@ pub fn parse_url(url: &str) -> Result<AnimeContext> {
 
     {
         let is_valid_host = match url.host_str() {
-            Some(host) => host == "animeunity.to" || host == "www.animeunity.to",
+            Some(host) => {
+                host == "animeunity.to"
+                    || host == "www.animeunity.to"
+                    || host == "animeunity.so"
+                    || host == "www.animeunity.so"
+            }
             _ => false,
         };
         if !is_valid_host {
@@ -285,7 +290,7 @@ pub fn fetch_video_infos(id: u64) -> Result<Video> {
 }
 
 fn fetch_embed_url(id: u64) -> Result<String> {
-    http::get(&format!("https://www.animeunity.to/embed-url/{id}"))
+    http::get(&format!("https://www.animeunity.so/embed-url/{id}"))
 }
 
 fn extract_text(node: Rc<Node>) -> String {
@@ -433,7 +438,7 @@ pub fn fetch_info<'a>(
         title: &'a mut Option<Box<str>>,
     ) -> Result<Info> {
         let url = format!(
-            "https://www.animeunity.to/info_api/{}/1?start_range={}&end_range={}",
+            "https://www.animeunity.so/info_api/{}/1?start_range={}&end_range={}",
             id, start, stop
         );
 
