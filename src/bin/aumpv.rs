@@ -47,11 +47,27 @@ fn _main() -> Result<()> {
     };
 
     let mut anime = parse_url(&url)?;
+    anime.fetch_requirements(Requirements::ANILIST_ID | Requirements::MAL_ID)?;
 
-    if let Some(ep) = anime.episode {
+    if let Some((ep, mal_id, anilist_id, epno)) = anime
+        .episode
+        .map(|video| (video, anime.mal_id, anime.anilist_id, anime.episode))
+    {
         let Video { url, .. } = fetch_video_infos(ep)?;
         std::io::stdout().write_all(b"{\"type\":\"video\",\"url\":")?;
         serde_json::to_writer(std::io::stdout(), &url)?;
+        if let Some(mal_id) = mal_id {
+            std::io::stdout().write_all(b",\"mal_id\":")?;
+            serde_json::to_writer(std::io::stdout(), &mal_id)?;
+        }
+        if let Some(anilist_id) = anilist_id {
+            std::io::stdout().write_all(b",\"anilist_id\":")?;
+            serde_json::to_writer(std::io::stdout(), &anilist_id)?;
+        }
+        if let Some(epno) = epno {
+            std::io::stdout().write_all(b",\"track\":")?;
+            serde_json::to_writer(std::io::stdout(), &epno)?;
+        }
         std::io::stdout().write_all(b"}")?;
     } else {
         let eps = fetch_info(anime.anime_id, &mut anime.slug, &mut anime.title)
