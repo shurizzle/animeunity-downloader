@@ -4,7 +4,7 @@ pub use audown::*;
 use std::fmt;
 
 use anyhow::Result;
-use dialoguer::{theme::ColorfulTheme, MultiSelect};
+use dialoguer::{MultiSelect, theme::ColorfulTheme};
 use directories::ProjectDirs;
 use template::Variables;
 
@@ -42,7 +42,8 @@ impl<'a> EpisodeVariables<'a> {
 }
 
 impl<'a> Variables for EpisodeVariables<'a> {
-    type Item<'b> = EpisodeValue<'b>
+    type Item<'b>
+        = EpisodeValue<'b>
     where
         Self: 'b;
 
@@ -128,7 +129,7 @@ fn _main() -> Result<()> {
     for ep in fetch_info(anime.anime_id, &mut anime.slug, &mut anime.title) {
         let (no, episode) = ep?;
 
-        defaults.push(anime.episode.map_or(true, |epno| episode.id == epno));
+        defaults.push(anime.episode.is_none_or(|epno| episode.id == epno));
         reprs.push(no);
         data.push(episode);
     }

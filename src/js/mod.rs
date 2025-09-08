@@ -6,10 +6,10 @@ macro_rules! imp {
         #[path = $file]
         mod imp;
 
-        use crate::Video;
+        use crate::RawVideo;
         use anyhow::Result;
 
-        pub fn extract_video_infos(mut code: String) -> Result<Video> {
+        pub fn extract_video_infos(mut code: String) -> Result<RawVideo> {
             code.push_str(
                 "({file:window.video.filename||window.video.name,url:window.downloadUrl})",
             );

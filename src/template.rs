@@ -6,15 +6,15 @@ use std::{
 };
 
 use nom::{
+    AsChar, Compare, Err, ExtendInto, IResult, InputIter, InputLength, InputTake,
+    InputTakeAtPosition, Offset, Slice,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, one_of},
     combinator::{all_consuming, map},
     error::{ErrorKind, ParseError},
-    multi::{fold_many1, fold_many_m_n, many0},
+    multi::{fold_many_m_n, fold_many1, many0},
     sequence::{delimited, pair, preceded, terminated},
-    AsChar, Compare, Err, ExtendInto, IResult, InputIter, InputLength, InputTake,
-    InputTakeAtPosition, Offset, Slice,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,7 +42,7 @@ pub struct BoundTemplate<'a, V: Variables>(&'a Template, &'a V);
 
 impl<'a, V: Variables> fmt::Display for BoundTemplate<'a, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for item in self.0 .0.iter() {
+        for item in self.0.0.iter() {
             match item {
                 Item::Variable(name) => {
                     if let Some(value) = self.1.get(name) {
@@ -57,7 +57,8 @@ impl<'a, V: Variables> fmt::Display for BoundTemplate<'a, V> {
 }
 
 impl<T: fmt::Display> Variables for HashMap<Box<str>, T> {
-    type Item<'a> = &'a T
+    type Item<'a>
+        = &'a T
     where
         Self: 'a;
 
@@ -68,7 +69,8 @@ impl<T: fmt::Display> Variables for HashMap<Box<str>, T> {
 }
 
 impl<T: fmt::Display> Variables for HashMap<String, T> {
-    type Item<'a> = &'a T
+    type Item<'a>
+        = &'a T
     where
         Self: 'a;
 
@@ -79,7 +81,8 @@ impl<T: fmt::Display> Variables for HashMap<String, T> {
 }
 
 impl<'a, T: fmt::Display> Variables for HashMap<&'a str, T> {
-    type Item<'b> = &'b T
+    type Item<'b>
+        = &'b T
     where
         Self: 'b;
 
@@ -125,7 +128,7 @@ impl Template {
             .map(|(_, templ)| templ)
     }
 
-    pub fn variables(&self) -> VarIter {
+    pub fn variables(&self) -> VarIter<'_> {
         VarIter(self.0.iter())
     }
 

@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use boa_engine::{js_str, value::JsValue, Context, Source};
 
-use crate::Video;
+use crate::RawVideo;
 
-pub fn extract_video_infos(code: &str) -> Result<Video> {
+pub fn extract_video_infos(code: &str) -> Result<RawVideo> {
     let mut ctx = Context::default();
     match ctx
         .eval(Source::from_bytes(&code))
@@ -25,14 +25,18 @@ pub fn extract_video_infos(code: &str) -> Result<Video> {
                 .get(js_str!("file"), &mut ctx)
                 .map_err(|e| anyhow!("{e}"))?
             {
-                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
-                _ => bail!("file not found"),
+                JsValue::String(s) => {
+                    let s = s.to_std_string()?.into_boxed_str();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                }
+                _ => None,
             };
-            if file.is_empty() {
-                bail!("file not found");
-            }
 
-            Ok(Video { file, url })
+            Ok(RawVideo { file, url })
         }
         _ => unreachable!(),
     }

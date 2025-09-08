@@ -5,11 +5,18 @@ pub mod template;
 
 use std::{borrow::Borrow, rc::Rc};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use markup5ever_rcdom::{Node, NodeData};
 use serde::Deserialize;
 use trim_in_place::TrimInPlace;
+use url::Url;
 use urlencoding::Encoded;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawVideo {
+    pub file: Option<Box<str>>,
+    pub url: Box<str>,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Video {
@@ -246,7 +253,7 @@ pub fn parse_url(url: &str) -> Result<AnimeContext> {
     bail!("Invalid path")
 }
 
-pub fn fetch_video_infos(id: u64) -> Result<Video> {
+fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
     fn filter_script(node: Rc<Node>) -> Result<String, Rc<Node>> {
         match node.data {
             NodeData::Element {
@@ -287,6 +294,38 @@ pub fn fetch_video_infos(id: u64) -> Result<Video> {
                 },
             ),
     )
+}
+
+pub fn fetch_video_infos(id: u64) -> Result<Video> {
+    let RawVideo { file, url } = _fetch_video_infos(id)?;
+
+    let file = if file.is_none() {
+        if let Ok(uri) = Url::parse(&url) {
+            'file: {
+                for (k, n) in uri.query_pairs() {
+                    if k == "filename"
+                        && let Some(n) = n.split('/').next_back()
+                        && !n.is_empty()
+                    {
+                        break 'file Some(n.to_string().into_boxed_str());
+                    }
+                }
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        file
+    };
+
+    // TODO: check Content-Disposition
+
+    if let Some(file) = file {
+        Ok(Video { file, url })
+    } else {
+        bail!("file not found")
+    }
 }
 
 fn fetch_embed_url(id: u64) -> Result<String> {
@@ -508,13 +547,13 @@ pub fn fetch_info<'a>(
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
-                if let Some(mut eps) = self.eps.take() {
-                    if let Some(ep) = eps.next() {
-                        self.eps = Some(eps);
-                        let mut name = ep.number.clone();
-                        name.pad_left(self.num_len);
-                        return Some(Ok((name.into(), ep)));
-                    }
+                if let Some(mut eps) = self.eps.take()
+                    && let Some(ep) = eps.next()
+                {
+                    self.eps = Some(eps);
+                    let mut name = ep.number.clone();
+                    name.pad_left(self.num_len);
+                    return Some(Ok((name.into(), ep)));
                 }
 
                 if let Some(mut pages) = self.pages.take() {

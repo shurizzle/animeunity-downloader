@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs::File, process::Command};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
-use serde::{de::Error, Deserialize};
+use serde::{Deserialize, de::Error};
 
 use crate::template::{Template, VarIter, Variables};
 
@@ -51,7 +51,7 @@ impl Executor {
         }
     }
 
-    pub fn variables(&self) -> ExecutorVariables {
+    pub fn variables(&self) -> ExecutorVariables<'_> {
         match self {
             Executor::Command(cmd) => cmd.variables().into(),
             Executor::Print => ExecutorVariables::Print(Some("url")),
@@ -125,7 +125,7 @@ impl CommandExecutor {
         Ok(())
     }
 
-    pub fn variables(&self) -> CommandVariables {
+    pub fn variables(&self) -> CommandVariables<'_> {
         CommandVariables {
             inner: None,
             args: self.0.iter(),
