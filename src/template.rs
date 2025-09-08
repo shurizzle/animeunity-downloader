@@ -1,13 +1,8 @@
 use core::fmt;
-use std::{
-    collections::HashMap,
-    iter::FusedIterator,
-    ops::{RangeFrom, RangeTo},
-};
+use std::{collections::HashMap, iter::FusedIterator};
 
 use nom::{
-    AsChar, Compare, Err, ExtendInto, IResult, InputIter, InputLength, InputTake,
-    InputTakeAtPosition, Offset, Slice,
+    AsChar, Compare, Err, ExtendInto, IResult, Input, Offset, Parser,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, one_of},
@@ -141,31 +136,25 @@ impl Template {
     }
 }
 
-fn hexdigit<Input, Error>(input: Input) -> IResult<Input, u32, Error>
+fn hexdigit<I, Error>(input: I) -> IResult<I, u32, Error>
 where
-    Input: InputIter + Slice<RangeFrom<usize>> + Clone,
-    <Input as InputIter>::Item: AsChar + Copy,
-    &'static str: nom::FindToken<<Input as nom::InputIter>::Item>,
-    Error: ParseError<Input>,
+    Error: ParseError<I>,
+    I: Input,
+    <I as Input>::Item: AsChar,
 {
     map(one_of("0123456789abcdefABCDEF"), |c: char| match c {
         '0'..='9' => (c as u32) - ('0' as u32),
         'a'..='f' => (c as u32) - ('a' as u32) + 10,
         'A'..='F' => (c as u32) - ('A' as u32) + 10,
         _ => unsafe { core::hint::unreachable_unchecked() },
-    })(input)
+    })
+    .parse(input)
 }
 
-fn unicode_escaped<Input, Error>(input: Input) -> IResult<Input, char, Error>
+fn unicode_escaped<I, Error>(input: I) -> IResult<I, char, Error>
 where
-    Input: InputLength
-        + InputIter
-        + Slice<RangeFrom<usize>>
-        + InputTakeAtPosition<Item = char>
-        + Clone,
-    <Input as InputIter>::Item: AsChar + Copy,
-    &'static str: nom::FindToken<<Input as nom::InputIter>::Item>,
-    Error: ParseError<Input>,
+    I: Input<Item = char> + Clone,
+    Error: ParseError<I>,
 {
     let initial = input.clone();
 
@@ -175,7 +164,8 @@ where
         terminated(hexdigit, take_while(|c: char| c == '_')),
         || 0,
         |acc, n| acc * 10 + n,
-    )(input)?;
+    )
+    .parse(input)?;
 
     if let Some(c) = char::from_u32(n) {
         Ok((input, c))
@@ -184,29 +174,19 @@ where
     }
 }
 
-fn octdigit<Input, Error>(input: Input) -> IResult<Input, u32, Error>
+fn octdigit<I, Error>(input: I) -> IResult<I, u32, Error>
 where
-    Input: InputIter + Slice<RangeFrom<usize>> + Clone,
-    <Input as InputIter>::Item: AsChar + Copy,
-    &'static str: nom::FindToken<<Input as nom::InputIter>::Item>,
-    Error: ParseError<Input>,
+    Error: ParseError<I>,
+    I: Input,
+    <I as Input>::Item: AsChar,
 {
-    map(one_of("01234567"), |c: char| (c as u32) - ('0' as u32))(input)
+    map(one_of("01234567"), |c: char| (c as u32) - ('0' as u32)).parse(input)
 }
 
-fn text<Input, Error>(input: Input) -> IResult<Input, Item, Error>
+fn text<I, Error>(input: I) -> IResult<I, Item, Error>
 where
-    Input: InputLength
-        + InputIter<Item = char>
-        + InputTake
-        + InputTakeAtPosition<Item = char>
-        + Compare<&'static str>
-        + Offset
-        + Slice<RangeTo<usize>>
-        + Slice<RangeFrom<usize>>
-        + ExtendInto<Extender = String>
-        + Clone,
-    Error: ParseError<Input>,
+    I: Input<Item = char> + Compare<&'static str> + Offset + ExtendInto<Extender = String> + Clone,
+    Error: ParseError<I>,
 {
     enum S<Input: ExtendInto<Extender = String>> {
         I(Input),
@@ -266,21 +246,14 @@ where
             },
         ),
         |s| Item::Text(s.into_boxed_str()),
-    )(input)
+    )
+    .parse(input)
 }
 
-fn variable<Input, Error>(input: Input) -> IResult<Input, Item, Error>
+fn variable<I, Error>(input: I) -> IResult<I, Item, Error>
 where
-    Input: InputLength
-        + InputTake
-        + InputTakeAtPosition<Item = char>
-        + InputIter<Item = char>
-        + Slice<RangeFrom<usize>>
-        + Slice<RangeTo<usize>>
-        + ExtendInto<Extender = String>
-        + Offset
-        + Clone,
-    Error: ParseError<Input>,
+    I: Input<Item = char> + ExtendInto<Extender = String> + Offset + Clone,
+    Error: ParseError<I>,
 {
     map(
         delimited(
@@ -288,30 +261,27 @@ where
             take_while1(|c: char| !matches!(c, '{' | '}' | '\\' | '"')),
             char('}'),
         ),
-        |t: Input| {
+        |t: I| {
             let mut res = String::new();
             t.extend_into(&mut res);
             Item::Variable(res.into_boxed_str())
         },
-    )(input)
+    )
+    .parse(input)
 }
 
-fn parser<Input, Error>(input: Input) -> IResult<Input, Template, Error>
+fn parser<I, Error>(input: I) -> IResult<I, Template, Error>
 where
-    Input: InputLength
-        + InputIter<Item = char>
-        + InputTake
-        + InputTakeAtPosition<Item = char>
+    I: Input<Item = char>
         + Compare<&'static str>
-        + Slice<RangeTo<usize>>
-        + Slice<RangeFrom<usize>>
         + ExtendInto<Extender = String>
         + Offset
         + fmt::Debug
         + Clone,
-    Error: ParseError<Input> + fmt::Debug,
+    Error: ParseError<I> + fmt::Debug,
 {
     map(all_consuming(many0(alt((text, variable)))), |xs| {
         Template(xs.into())
-    })(input)
+    })
+    .parse(input)
 }
