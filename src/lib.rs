@@ -10,7 +10,6 @@ use markup5ever_rcdom::{Node, NodeData};
 use serde::Deserialize;
 use trim_in_place::TrimInPlace;
 use url::Url;
-use urlencoding::Encoded;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawVideo {
@@ -78,51 +77,26 @@ impl AnimeContext {
         bail!("Cannot find anime title");
     }
 
-    fn fetch_ids<F>(&mut self, mut f: F) -> Result<()>
-    where
-        F: FnMut(&mut AnimeContext) -> bool,
-    {
-        let url = format!(
-            "https://www.animeunity.so/archivio/?title={}",
-            Encoded(
-                self.title
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("cannot find title"))?
-                    .as_bytes()
-            )
-        );
+    fn fetch_ids(&mut self) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Ids {
+            mal_id: Option<u64>,
+            anilist_id: Option<u64>,
+        }
+        let Ids { mal_id, anilist_id } = serde_json::from_str(
+            &http::get(&format!(
+                "https://www.animeunity.so/info_api/{}/",
+                self.anime_id
+            ))
+            .context("Invalid informations")?,
+        )
+        .context("Invalid player informations")?;
 
-        let body = http::get(&url).context("Invalid informations")?;
-
-        if let Some(anime) =
-            dom::html_first(body.as_bytes(), dom::filter_tag_attr("archivio", "records"))
-        {
-            #[derive(Deserialize)]
-            struct Info {
-                pub id: u64,
-                pub anilist_id: Option<u64>,
-                pub mal_id: Option<u64>,
-            }
-            let infos: Vec<Info> =
-                serde_json::from_slice(anime.as_bytes()).context("Invalid player informations")?;
-            for Info {
-                id,
-                anilist_id,
-                mal_id,
-            } in infos
-            {
-                if id == self.anime_id {
-                    if let Some(anilist_id) = anilist_id {
-                        self.anilist_id = Some(anilist_id);
-                    }
-                    if let Some(mal_id) = mal_id {
-                        self.mal_id = Some(mal_id);
-                    }
-                    if f(self) {
-                        return Ok(());
-                    }
-                }
-            }
+        if let Some(anilist_id) = anilist_id {
+            self.anilist_id = Some(anilist_id);
+        }
+        if let Some(mal_id) = mal_id {
+            self.mal_id = Some(mal_id);
         }
 
         Ok(())
@@ -137,7 +111,7 @@ impl AnimeContext {
             reqs.contains(Requirements::MAL_ID),
         ) {
             (true, true) => {
-                self.fetch_ids(|me| me.anilist_id.is_some() && me.mal_id.is_some())?;
+                self.fetch_ids()?;
                 match (self.anilist_id.is_none(), self.mal_id.is_none()) {
                     (true, true) => Err(anyhow!("Cannot find anilist_id and mal_id")),
                     (false, true) => Err(anyhow!("Cannot find mal_id")),
@@ -146,7 +120,7 @@ impl AnimeContext {
                 }
             }
             (false, true) => {
-                self.fetch_ids(|me| me.mal_id.is_some())?;
+                self.fetch_ids()?;
                 if self.mal_id.is_none() {
                     Err(anyhow!("Cannot find mal_id"))
                 } else {
@@ -154,7 +128,7 @@ impl AnimeContext {
                 }
             }
             (true, false) => {
-                self.fetch_ids(|me| me.anilist_id.is_some())?;
+                self.fetch_ids()?;
                 if self.anilist_id.is_none() {
                     Err(anyhow!("Cannot find anilist_id"))
                 } else {
