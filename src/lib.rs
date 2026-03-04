@@ -259,11 +259,11 @@ fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
             })
             .filter(|s| !s.is_empty())
             .fold(
-                String::from("const window=this||globalThis||{};"),
+                String::from("const window=this||globalThis||{};function setTimeout(){};window.setTimeout=setTimeout;"),
                 |mut code, script| {
                     code.push_str("try{");
                     code.push_str(&script);
-                    code.push_str("}catch(____e){}\n");
+                    code.push_str("}catch{}\n");
                     code
                 },
             ),

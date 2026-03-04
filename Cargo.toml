@@ -9,7 +9,7 @@ strip = true
 codegen-units = 1
 
 [features]
-default = ["boa", "curl"]
+default = ["quickjs", "curl"]
 boa = ["dep:boa_engine"]
 v8 = ["dep:mini-v8"]
 quickjs = ["dep:quickjs_runtime", "quickjs_runtime/bellard"]
