@@ -273,30 +273,25 @@ fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
 pub fn fetch_video_infos(id: u64) -> Result<Video> {
     let RawVideo { file, url } = _fetch_video_infos(id)?;
 
-    let file = if file.is_none() {
-        if let Ok(uri) = Url::parse(&url) {
-            'file: {
-                for (k, n) in uri.query_pairs() {
-                    if k == "filename"
-                        && let Some(n) = n.split('/').next_back()
-                        && !n.is_empty()
-                    {
-                        break 'file Some(n.to_string().into_boxed_str());
-                    }
-                }
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        file
-    };
+    let file = file.or_else(|| {
+        Url::parse(&url).ok().and_then(|uri| {
+            uri.query_pairs()
+                .find(|(k, _)| k == "filename")
+                .map(|(_, n)| n.into_owned().into_boxed_str())
+        })
+    });
 
     // TODO: check Content-Disposition
 
     if let Some(file) = file {
-        Ok(Video { file, url })
+        let file = sanitize_filename::sanitize(&*file);
+        if file.is_empty() {
+            bail!("file not found")
+        }
+        Ok(Video {
+            file: file.into_boxed_str(),
+            url,
+        })
     } else {
         bail!("file not found")
     }

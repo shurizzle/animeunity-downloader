@@ -39,3 +39,4 @@ boa_engine = { version = "0.20.0", optional = true }
 quickjs_runtime = { version = "0.15.3", default-features = false, optional = true }
 nom = "8.0.0"
 bitflags = "2.6.0"
+sanitize-filename = "0.6.0"
