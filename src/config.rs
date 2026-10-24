@@ -76,7 +76,7 @@ impl<'de> Deserialize<'de> for CommandExecutor {
                 res.into_iter()
                     .map(Template::parse)
                     .collect::<Option<Vec<_>>>()
-                    .and_then(|vec| if vec.is_empty() { None } else { Some(vec) })
+                    .filter(|vec| !vec.is_empty())
                     .ok_or_else(|| D::Error::custom("Invalid command"))?,
             ))
         }
