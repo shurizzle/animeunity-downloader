@@ -3,10 +3,24 @@ use cfg_if::cfg_if;
 
 cfg_if! {
     if #[cfg(feature = "ureq")] {
+        use std::sync::LazyLock;
+
+        fn agent() -> &'static ureq::Agent {
+            static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+                let config = ureq::Agent::config_builder();
+                #[cfg(feature = "ureq-native-tls")]
+                let config = config.tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .provider(ureq::tls::TlsProvider::NativeTls)
+                        .build(),
+                );
+                config.build().into()
+            });
+            &AGENT
+        }
+
         pub fn get(url: &str) -> Result<String> {
-            Ok(ureq::get(url)
-                .call()?
-                .into_string()?)
+            Ok(agent().get(url).call()?.body_mut().read_to_string()?)
         }
     } else if #[cfg(feature = "curl")] {
         use curl::easy::{Easy2, Handler};
