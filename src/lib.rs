@@ -11,6 +11,24 @@ use serde::Deserialize;
 use trim_in_place::TrimInPlace;
 use url::Url;
 
+#[macro_export]
+macro_rules! domain {
+    () => {
+        "animeunity.co"
+    };
+    (@map _) => {
+        domain!()
+    };
+    (@map $tt:tt) => {
+        $tt
+    };
+    ($($tt:tt)*) => {
+        concat!($(domain!(@map $tt)),*)
+    };
+}
+
+const VALID_DOMAINS: &[&str] = &[domain!(), "animeunity.so", "animeunity.to"];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawVideo {
     pub file: Option<Box<str>>,
@@ -51,7 +69,7 @@ impl Requirements {
 impl AnimeContext {
     fn fetch_title(&mut self) -> Result<()> {
         let url = format!(
-            "https://www.animeunity.so/anime/{}-{}",
+            domain!("https://www." _ "/anime/{}-{}"),
             self.anime_id,
             self.slug
                 .as_ref()
@@ -85,7 +103,7 @@ impl AnimeContext {
         }
         let Ids { mal_id, anilist_id } = serde_json::from_str(
             &http::get(&format!(
-                "https://www.animeunity.so/info_api/{}/",
+                domain!("https://www." _ "/info_api/{}/"),
                 self.anime_id
             ))
             .context("Invalid informations")?,
@@ -155,13 +173,12 @@ pub fn parse_url(url: &str) -> Result<AnimeContext> {
     let url = url::Url::parse(url).context("Invalid URL")?;
 
     {
+        fn strip_www(host: &str) -> &str {
+            host.strip_prefix("www.").unwrap_or(host)
+        }
+
         let is_valid_host = match url.host_str() {
-            Some(host) => {
-                host == "animeunity.to"
-                    || host == "www.animeunity.to"
-                    || host == "animeunity.so"
-                    || host == "www.animeunity.so"
-            }
+            Some(host) => VALID_DOMAINS.contains(&strip_www(host)),
             _ => false,
         };
         if !is_valid_host {
@@ -298,7 +315,7 @@ pub fn fetch_video_infos(id: u64) -> Result<Video> {
 }
 
 fn fetch_embed_url(id: u64) -> Result<String> {
-    http::get(&format!("https://www.animeunity.so/embed-url/{id}"))
+    http::get(&format!(domain!("https://www." _ "/embed-url/{}"), id))
 }
 
 fn extract_text(node: Rc<Node>) -> String {
@@ -446,7 +463,7 @@ pub fn fetch_info<'a>(
         title: &'a mut Option<Box<str>>,
     ) -> Result<Info> {
         let url = format!(
-            "https://www.animeunity.so/info_api/{}/1?start_range={}&end_range={}",
+            domain!("https://www." _ "/info_api/{}/1?start_range={}&end_range={}"),
             id, start, stop
         );
 
