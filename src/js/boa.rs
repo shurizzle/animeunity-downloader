@@ -1,43 +1,38 @@
 use anyhow::{anyhow, bail, Result};
-use boa_engine::{js_str, value::JsValue, Context, Source};
+use boa_engine::{js_string, Context, Source};
 
 use crate::RawVideo;
 
 pub fn extract_video_infos(code: &str) -> Result<RawVideo> {
     let mut ctx = Context::default();
-    match ctx
+    let result = ctx
         .eval(Source::from_bytes(&code))
+        .map_err(|e| anyhow!("{e}"))?;
+
+    let Some(o) = result.as_object() else {
+        bail!("expected object");
+    };
+
+    let url = match o
+        .get(js_string!("url"), &mut ctx)
         .map_err(|e| anyhow!("{e}"))?
+        .as_string()
     {
-        JsValue::Object(o) => {
-            let url = match o
-                .get(js_str!("url"), &mut ctx)
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                JsValue::String(s) => s.to_std_string()?.into_boxed_str(),
-                _ => bail!("url not found"),
-            };
-            if url.is_empty() {
-                bail!("url not found");
-            }
-
-            let file = match o
-                .get(js_str!("file"), &mut ctx)
-                .map_err(|e| anyhow!("{e}"))?
-            {
-                JsValue::String(s) => {
-                    let s = s.to_std_string()?.into_boxed_str();
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                }
-                _ => None,
-            };
-
-            Ok(RawVideo { file, url })
-        }
-        _ => unreachable!(),
+        Some(s) => s.to_std_string()?.into_boxed_str(),
+        None => bail!("url not found"),
+    };
+    if url.is_empty() {
+        bail!("url not found");
     }
+
+    let file = o
+        .get(js_string!("file"), &mut ctx)
+        .map_err(|e| anyhow!("{e}"))?
+        .as_string()
+        .map(|s| s.to_std_string())
+        .transpose()?
+        .map(String::into_boxed_str)
+        .filter(|s| !s.is_empty());
+
+    Ok(RawVideo { file, url })
 }
