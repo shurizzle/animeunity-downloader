@@ -17,13 +17,13 @@ macro_rules! domain {
         "animeunity.co"
     };
     (@map _) => {
-        domain!()
+        $crate::domain!()
     };
     (@map $tt:tt) => {
         $tt
     };
     ($($tt:tt)*) => {
-        concat!($(domain!(@map $tt)),*)
+        concat!($($crate::domain!(@map $tt)),*)
     };
 }
 

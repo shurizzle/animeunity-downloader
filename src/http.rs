@@ -1,6 +1,9 @@
 use anyhow::Result;
 use cfg_if::cfg_if;
 
+// The video embed host (vixcloud) answers 403 when the Referer header is missing.
+const REFERER: &str = crate::domain!("https://" _ "/");
+
 cfg_if! {
     if #[cfg(feature = "ureq")] {
         use std::sync::LazyLock;
@@ -20,7 +23,12 @@ cfg_if! {
         }
 
         pub fn get(url: &str) -> Result<String> {
-            Ok(agent().get(url).call()?.body_mut().read_to_string()?)
+            Ok(agent()
+                .get(url)
+                .header("Referer", REFERER)
+                .call()?
+                .body_mut()
+                .read_to_string()?)
         }
     } else if #[cfg(feature = "curl")] {
         use curl::easy::{Easy2, Handler};
@@ -38,6 +46,8 @@ cfg_if! {
             let mut curl = Easy2::new(Collector(Vec::new()));
             curl.get(true)?;
             curl.url(url)?;
+            curl.referer(REFERER)?;
+            curl.fail_on_error(true)?;
             curl.perform()?;
             let content = core::mem::take(&mut curl.get_mut().0);
             Ok(String::from_utf8(content)?)
