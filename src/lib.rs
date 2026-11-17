@@ -14,7 +14,7 @@ use url::Url;
 #[macro_export]
 macro_rules! domain {
     () => {
-        "animeunity.co"
+        "animeunity.cx"
     };
     (@map _) => {
         $crate::domain!()
@@ -27,7 +27,7 @@ macro_rules! domain {
     };
 }
 
-const VALID_DOMAINS: &[&str] = &[domain!(), "animeunity.so", "animeunity.to"];
+const VALID_DOMAINS: &[&str] = &[domain!(), "animeunity.co", "animeunity.so", "animeunity.to"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawVideo {
