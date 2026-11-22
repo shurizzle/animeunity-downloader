@@ -310,27 +310,31 @@ fn extract_text(node: Rc<Node>) -> String {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Episode {
+pub struct EpisodeVideo {
     pub id: u64,
-    pub number: String,
+    pub language: Box<str>,
 }
 
-/// Lists episodes, picking for each one the video in the language of `video`
-/// (falls back to `ita`, then to any available language).
-pub fn fetch_info(anime_id: u64, video: Option<u64>) -> Result<Vec<(Box<str>, Episode)>> {
-    #[derive(Deserialize)]
-    struct RawVideo {
-        id: u64,
-        language: Box<str>,
+#[derive(Debug, Deserialize)]
+pub struct Episode {
+    pub number: String,
+    /// Never empty, sorted by language preference: `ita`, `jpn`, then the rest.
+    pub videos: Vec<EpisodeVideo>,
+}
+
+fn language_rank(lang: &str) -> u8 {
+    match lang {
+        "ita" => 0,
+        "jpn" => 1,
+        _ => 2,
     }
-    #[derive(Deserialize)]
-    struct RawEpisode {
-        number: String,
-        videos: Vec<RawVideo>,
-    }
+}
+
+/// Lists episodes with their padded display number.
+pub fn fetch_info(anime_id: u64) -> Result<Vec<(Box<str>, Episode)>> {
     #[derive(Deserialize)]
     struct Page {
-        episodes: Vec<RawEpisode>,
+        episodes: Vec<Episode>,
         tab_size: u64,
         total: u64,
     }
@@ -354,29 +358,15 @@ pub fn fetch_info(anime_id: u64, video: Option<u64>) -> Result<Vec<(Box<str>, Ep
         }
     }
 
-    let lang: Box<str> = video
-        .and_then(|v| raw.iter().flat_map(|e| &e.videos).find(|x| x.id == v))
-        .map_or("ita".into(), |x| x.language.clone());
-
     let num_len = raw.iter().map(|e| e.number.len()).max().unwrap_or(0);
     Ok(raw
         .into_iter()
-        .filter_map(|e| {
-            let v = e
-                .videos
-                .iter()
-                .find(|v| v.language == lang)
-                .or_else(|| e.videos.iter().find(|v| &*v.language == "ita"))
-                .or_else(|| e.videos.first())?;
+        .filter(|e| !e.videos.is_empty())
+        .map(|mut e| {
+            e.videos.sort_by_key(|v| language_rank(&v.language));
             let mut name = e.number.clone();
             name.pad_left(num_len);
-            Some((
-                name.into(),
-                Episode {
-                    id: v.id,
-                    number: e.number,
-                },
-            ))
+            (name.into(), e)
         })
         .collect())
 }

@@ -70,9 +70,9 @@ fn _main() -> Result<()> {
         }
         std::io::stdout().write_all(b"}")?;
     } else {
-        let eps = fetch_info(anime.anime_id, None)?
+        let eps = fetch_info(anime.anime_id)?
             .into_iter()
-            .map(|(_, ep)| ep.id)
+            .map(|(_, ep)| ep.videos[0].id)
             .collect::<Vec<_>>();
         let Some(slug) = anime.slug.as_ref().map(|s| s.as_ref()) else {
             bail!("Cannot find slug");

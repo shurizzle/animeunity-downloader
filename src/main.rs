@@ -1,10 +1,11 @@
 mod config;
+mod select;
 pub use audown::*;
 
 use std::fmt;
 
 use anyhow::Result;
-use dialoguer::{MultiSelect, theme::ColorfulTheme};
+use dialoguer::theme::ColorfulTheme;
 use directories::ProjectDirs;
 use template::Variables;
 
@@ -122,24 +123,30 @@ fn _main() -> Result<()> {
 
     let mut anime = parse_url(&url)?;
 
-    let mut defaults = Vec::new();
-    let mut reprs = Vec::new();
-    let mut data = Vec::new();
+    let episodes = fetch_info(anime.anime_id)?;
+    // Language of the video in the URL wins, otherwise the first one (ita, then jpn).
+    let lang = anime.episode.and_then(|v| {
+        episodes
+            .iter()
+            .flat_map(|(_, e)| &e.videos)
+            .find(|x| x.id == v)
+            .map(|x| &*x.language)
+    });
+    let items = episodes
+        .iter()
+        .map(|(no, e)| select::Item {
+            name: no,
+            languages: e.videos.iter().map(|v| &*v.language).collect(),
+            checked: anime
+                .episode
+                .is_none_or(|v| e.videos.iter().any(|x| x.id == v)),
+            language: lang
+                .and_then(|l| e.videos.iter().position(|x| &*x.language == l))
+                .unwrap_or(0),
+        })
+        .collect();
 
-    for (no, episode) in fetch_info(anime.anime_id, anime.episode)? {
-        defaults.push(anime.episode.is_none_or(|epno| episode.id == epno));
-        reprs.push(no);
-        data.push(episode);
-    }
-
-    let selections = MultiSelect::with_theme(&ColorfulTheme::default())
-        .items(reprs.as_slice())
-        .defaults(defaults.as_slice())
-        .max_length(120)
-        .interact_opt()?;
-    let mut selections = if let Some(s) = selections {
-        s
-    } else {
+    let Some(mut selections) = select::multi_select(&ColorfulTheme::default(), items, 120)? else {
         return Ok(());
     };
     selections.sort_unstable();
@@ -160,21 +167,15 @@ fn _main() -> Result<()> {
         eprintln!("{err}");
     }
 
-    for (i, episode) in data.into_iter().enumerate() {
-        if selections.is_empty() {
-            break;
-        }
+    for (i, lang) in selections {
+        let episode = &episodes[i].1;
+        let video = fetch_video_infos(
+            anime.anime_id,
+            anime.slug.as_deref(),
+            episode.videos[lang].id,
+        )?;
 
-        match selections.binary_search(&i) {
-            Ok(i) => {
-                selections.remove(i);
-            }
-            Err(_) => continue,
-        }
-
-        let video = fetch_video_infos(anime.anime_id, anime.slug.as_deref(), episode.id)?;
-
-        ex.execute(&EpisodeVariables::new(&anime, &video, &episode))?;
+        ex.execute(&EpisodeVariables::new(&anime, &video, episode))?;
     }
 
     Ok(())
