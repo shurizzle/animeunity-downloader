@@ -139,7 +139,7 @@ pub fn load() -> Result<HashMap<String, CommandExecutor>> {
         cfg.push("config.yaml");
 
         if cfg.exists() {
-            return serde_yml::from_reader::<_, HashMap<String, CommandExecutor>>(
+            return serde_saphyr::from_reader::<_, HashMap<String, CommandExecutor>>(
                 File::open(cfg).context("Error while loading configuration")?,
             )
             .context("Error in configuration file");
@@ -147,4 +147,19 @@ pub fn load() -> Result<HashMap<String, CommandExecutor>> {
     }
 
     Ok(HashMap::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_yaml_config() {
+        let yaml = "mpv:\n  - mpv\n  - --force-window\nempty: []\n";
+        assert!(serde_saphyr::from_str::<HashMap<String, CommandExecutor>>(yaml).is_err());
+
+        let cfg: HashMap<String, CommandExecutor> =
+            serde_saphyr::from_str("mpv:\n  - mpv\n  - --force-window\n").unwrap();
+        assert_eq!(cfg["mpv"].0.len(), 2);
+    }
 }

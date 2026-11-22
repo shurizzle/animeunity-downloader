@@ -19,23 +19,23 @@ ureq = ["dep:ureq"]
 ureq-native-tls = ["ureq", "ureq/native-tls"]
 
 [dependencies]
-cfg-if = "1.0.0"
-ureq = { version = "3.5.0", default-features = true, optional = true }
-curl = { version = "0.4.47", optional = true }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.134"
-serde_yml = "0.0.13"
-url = "2.5.4"
-anyhow = "1.0.95"
-memchr = "2.7.4"
+cfg-if = "1.0.5"
+ureq = { version = "3.5.2", default-features = true, optional = true }
+curl = { version = "0.4.51", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde-saphyr = "2.2.0"
+url = "2.5.9"
+anyhow = "1.0.104"
+memchr = "2.8.3"
 dialoguer = { version = "0.12.0", default-features = false }
 directories = "6.0.0"
-html5ever = { version = "0.39.0" }
-markup5ever_rcdom = "0.39.0+unofficial"
+html5ever = { version = "0.40.1" }
+markup5ever_rcdom = "0.40.1+unofficial"
 trim-in-place = "0.2.1"
 mini-v8 = { version = "0.4.1", optional = true }
 boa_engine = { version = "0.22.0", optional = true }
 quickjs_runtime = { version = "0.18.0", default-features = false, optional = true }
 nom = "8.0.0"
-bitflags = "2.6.0"
+bitflags = "2.13.2"
 sanitize-filename = "0.6.0"
