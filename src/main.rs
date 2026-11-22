@@ -126,9 +126,7 @@ fn _main() -> Result<()> {
     let mut reprs = Vec::new();
     let mut data = Vec::new();
 
-    for ep in fetch_info(anime.anime_id, &mut anime.slug, &mut anime.title) {
-        let (no, episode) = ep?;
-
+    for (no, episode) in fetch_info(anime.anime_id, anime.episode)? {
         defaults.push(anime.episode.is_none_or(|epno| episode.id == epno));
         reprs.push(no);
         data.push(episode);
@@ -174,7 +172,7 @@ fn _main() -> Result<()> {
             Err(_) => continue,
         }
 
-        let video = fetch_video_infos(episode.id)?;
+        let video = fetch_video_infos(anime.anime_id, anime.slug.as_deref(), episode.id)?;
 
         ex.execute(&EpisodeVariables::new(&anime, &video, &episode))?;
     }

@@ -18,7 +18,7 @@ impl<'se> serde::Serialize for Url<'se> {
     {
         serde::Serialize::serialize::<S>(
             &format_args!(
-                domain!("https://www." _ "/anime/{}-{}/{}"),
+                domain!("https://" www_ "/anime/{}-{}/{}"),
                 self.anime_id, self.slug, self.ep,
             ),
             serializer,
@@ -53,7 +53,7 @@ fn _main() -> Result<()> {
         .episode
         .map(|video| (video, anime.mal_id, anime.anilist_id, anime.episode))
     {
-        let Video { url, .. } = fetch_video_infos(ep)?;
+        let Video { url, .. } = fetch_video_infos(anime.anime_id, anime.slug.as_deref(), ep)?;
         std::io::stdout().write_all(b"{\"type\":\"video\",\"url\":")?;
         serde_json::to_writer(std::io::stdout(), &url)?;
         if let Some(mal_id) = mal_id {
@@ -70,9 +70,10 @@ fn _main() -> Result<()> {
         }
         std::io::stdout().write_all(b"}")?;
     } else {
-        let eps = fetch_info(anime.anime_id, &mut anime.slug, &mut anime.title)
-            .map(|res| res.map(|(_, ep)| ep.id))
-            .collect::<Result<Vec<_>>>()?;
+        let eps = fetch_info(anime.anime_id, None)?
+            .into_iter()
+            .map(|(_, ep)| ep.id)
+            .collect::<Vec<_>>();
         let Some(slug) = anime.slug.as_ref().map(|s| s.as_ref()) else {
             bail!("Cannot find slug");
         };

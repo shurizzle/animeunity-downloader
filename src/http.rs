@@ -47,6 +47,7 @@ cfg_if! {
             curl.get(true)?;
             curl.url(url)?;
             curl.referer(REFERER)?;
+            curl.follow_location(true)?;
             curl.fail_on_error(true)?;
             curl.perform()?;
             let content = core::mem::take(&mut curl.get_mut().0);

@@ -16,6 +16,9 @@ macro_rules! domain {
     () => {
         "animeunity.cx"
     };
+    (@map www_) => {
+        $crate::domain!()
+    };
     (@map _) => {
         $crate::domain!()
     };
@@ -60,99 +63,63 @@ bitflags::bitflags! {
     }
 }
 
-impl Requirements {
-    pub fn needs_title(&self) -> bool {
-        !(*self & (Self::TITLE | Self::MAL_ID | Self::ANILIST_ID)).is_empty()
+/// Inertia props embedded in the `data-page` attribute of a page.
+fn fetch_page_props<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
+    #[derive(Deserialize)]
+    struct Page<T> {
+        props: T,
     }
+
+    let body = http::get(url).context("Invalid informations")?;
+    let page = dom::html_first(body.as_bytes(), dom::filter_tag_attr("div", "data-page"))
+        .ok_or_else(|| anyhow!("Cannot find page informations"))?;
+    Ok(serde_json::from_str::<Page<T>>(&page)
+        .context("Invalid page informations")?
+        .props)
+}
+
+fn anime_url(anime_id: u64, slug: Option<&str>) -> String {
+    // shortcut: unknown slug relies on the server redirecting to the canonical one, fetch slug first if that stops working
+    format!(
+        domain!("https://" www_ "/anime/{}-{}"),
+        anime_id,
+        slug.unwrap_or("_")
+    )
 }
 
 impl AnimeContext {
-    fn fetch_title(&mut self) -> Result<()> {
-        let url = format!(
-            domain!("https://www." _ "/anime/{}-{}"),
-            self.anime_id,
-            self.slug
-                .as_ref()
-                .ok_or_else(|| anyhow!("cannot find slug"))?
-        );
-
-        let body = http::get(&url).context("Invalid informations")?;
-
-        if let Some(anime) = dom::html_first(
-            body.as_bytes(),
-            dom::filter_tag_attr("video-player", "anime"),
-        ) {
-            #[derive(Debug, Deserialize)]
-            struct Info {
-                pub title_eng: Box<str>,
-            }
-            let Info { title_eng: title } =
-                serde_json::from_slice(anime.as_bytes()).context("Invalid player informations")?;
-            self.title = Some(title);
-            return Ok(());
-        }
-
-        bail!("Cannot find anime title");
-    }
-
-    fn fetch_ids(&mut self) -> Result<()> {
+    fn fetch_anime(&mut self) -> Result<()> {
         #[derive(Deserialize)]
-        struct Ids {
+        struct Anime {
+            slug: Box<str>,
+            title: Box<str>,
             mal_id: Option<u64>,
             anilist_id: Option<u64>,
         }
-        let Ids { mal_id, anilist_id } = serde_json::from_str(
-            &http::get(&format!(
-                domain!("https://www." _ "/info_api/{}/"),
-                self.anime_id
-            ))
-            .context("Invalid informations")?,
-        )
-        .context("Invalid player informations")?;
-
-        if let Some(anilist_id) = anilist_id {
-            self.anilist_id = Some(anilist_id);
-        }
-        if let Some(mal_id) = mal_id {
-            self.mal_id = Some(mal_id);
+        #[derive(Deserialize)]
+        struct Props {
+            anime: Anime,
         }
 
+        let Props { anime } = fetch_page_props(&anime_url(self.anime_id, self.slug.as_deref()))?;
+        self.slug.get_or_insert(anime.slug);
+        self.title = Some(anime.title);
+        self.mal_id = anime.mal_id;
+        self.anilist_id = anime.anilist_id;
         Ok(())
     }
 
     pub fn fetch_requirements(&mut self, reqs: Requirements) -> Result<()> {
-        if reqs.needs_title() {
-            self.fetch_title()?;
+        if !reqs.is_empty() {
+            self.fetch_anime()?;
         }
         match (
-            reqs.contains(Requirements::ANILIST_ID),
-            reqs.contains(Requirements::MAL_ID),
+            reqs.contains(Requirements::ANILIST_ID) && self.anilist_id.is_none(),
+            reqs.contains(Requirements::MAL_ID) && self.mal_id.is_none(),
         ) {
-            (true, true) => {
-                self.fetch_ids()?;
-                match (self.anilist_id.is_none(), self.mal_id.is_none()) {
-                    (true, true) => Err(anyhow!("Cannot find anilist_id and mal_id")),
-                    (false, true) => Err(anyhow!("Cannot find mal_id")),
-                    (true, false) => Err(anyhow!("Cannot find anilist_id")),
-                    (false, false) => Ok(()),
-                }
-            }
-            (false, true) => {
-                self.fetch_ids()?;
-                if self.mal_id.is_none() {
-                    Err(anyhow!("Cannot find mal_id"))
-                } else {
-                    Ok(())
-                }
-            }
-            (true, false) => {
-                self.fetch_ids()?;
-                if self.anilist_id.is_none() {
-                    Err(anyhow!("Cannot find anilist_id"))
-                } else {
-                    Ok(())
-                }
-            }
+            (true, true) => Err(anyhow!("Cannot find anilist_id and mal_id")),
+            (false, true) => Err(anyhow!("Cannot find mal_id")),
+            (true, false) => Err(anyhow!("Cannot find anilist_id")),
             (false, false) => Ok(()),
         }
     }
@@ -244,7 +211,7 @@ pub fn parse_url(url: &str) -> Result<AnimeContext> {
     bail!("Invalid path")
 }
 
-fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
+fn _fetch_video_infos(anime_id: u64, slug: Option<&str>, id: u64) -> Result<RawVideo> {
     fn filter_script(node: Rc<Node>) -> Result<String, Rc<Node>> {
         match node.data {
             NodeData::Element {
@@ -269,7 +236,7 @@ fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
     }
 
     js::extract_video_infos(
-        dom::html_filter(http::get(&fetch_embed_url(id)?)?.as_bytes(), filter_script)
+        dom::html_filter(http::get(&fetch_embed_url(anime_id, slug, id)?)?.as_bytes(), filter_script)
             .map(|mut s| {
                 s.trim_in_place();
                 s
@@ -287,8 +254,8 @@ fn _fetch_video_infos(id: u64) -> Result<RawVideo> {
     )
 }
 
-pub fn fetch_video_infos(id: u64) -> Result<Video> {
-    let RawVideo { file, url } = _fetch_video_infos(id)?;
+pub fn fetch_video_infos(anime_id: u64, slug: Option<&str>, id: u64) -> Result<Video> {
+    let RawVideo { file, url } = _fetch_video_infos(anime_id, slug, id)?;
 
     let file = file.or_else(|| {
         Url::parse(&url).ok().and_then(|uri| {
@@ -314,8 +281,14 @@ pub fn fetch_video_infos(id: u64) -> Result<Video> {
     }
 }
 
-fn fetch_embed_url(id: u64) -> Result<String> {
-    http::get(&format!(domain!("https://www." _ "/embed-url/{}"), id))
+fn fetch_embed_url(anime_id: u64, slug: Option<&str>, id: u64) -> Result<String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Props {
+        embed_url: String,
+    }
+
+    Ok(fetch_page_props::<Props>(&format!("{}/{}", anime_url(anime_id, slug), id))?.embed_url)
 }
 
 fn extract_text(node: Rc<Node>) -> String {
@@ -342,266 +315,70 @@ pub struct Episode {
     pub number: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Info {
-    pub slug: Option<Box<str>>,
-    pub title: Option<Box<str>>,
-    pub episodes_count: u64,
-    pub episodes: Vec<Episode>,
-}
-
-pub fn fetch_info<'a>(
-    id: u64,
-    slug: &'a mut Option<Box<str>>,
-    title: &'a mut Option<Box<str>>,
-) -> impl Iterator<Item = Result<(Box<str>, Episode)>> + 'a {
+/// Lists episodes, picking for each one the video in the language of `video`
+/// (falls back to `ita`, then to any available language).
+pub fn fetch_info(anime_id: u64, video: Option<u64>) -> Result<Vec<(Box<str>, Episode)>> {
     #[derive(Deserialize)]
-    pub struct InfoMin {
-        pub episodes_count: u64,
-        pub episodes: Vec<Episode>,
-    }
-
-    #[derive(Deserialize)]
-    pub struct InfoSlug {
-        pub slug: Option<Box<str>>,
-        pub episodes_count: u64,
-        pub episodes: Vec<Episode>,
-    }
-
-    #[derive(Deserialize)]
-    pub struct InfoTitle {
-        pub name: Option<Box<str>>,
-        pub episodes_count: u64,
-        pub episodes: Vec<Episode>,
-    }
-
-    #[derive(Deserialize)]
-    pub struct InfoSlugTitle {
-        pub name: Option<Box<str>>,
-        pub slug: Option<Box<str>>,
-        pub episodes_count: u64,
-        pub episodes: Vec<Episode>,
-    }
-
-    impl From<InfoMin> for Info {
-        fn from(
-            InfoMin {
-                episodes_count,
-                episodes,
-            }: InfoMin,
-        ) -> Self {
-            Info {
-                slug: None,
-                title: None,
-                episodes_count,
-                episodes,
-            }
-        }
-    }
-
-    impl From<InfoSlug> for Info {
-        fn from(
-            InfoSlug {
-                slug,
-                episodes_count,
-                episodes,
-            }: InfoSlug,
-        ) -> Self {
-            Info {
-                slug,
-                title: None,
-                episodes_count,
-                episodes,
-            }
-        }
-    }
-
-    impl From<InfoTitle> for Info {
-        fn from(
-            InfoTitle {
-                name,
-                episodes_count,
-                episodes,
-            }: InfoTitle,
-        ) -> Self {
-            Info {
-                slug: None,
-                title: name,
-                episodes_count,
-                episodes,
-            }
-        }
-    }
-
-    impl From<InfoSlugTitle> for Info {
-        fn from(
-            InfoSlugTitle {
-                slug,
-                name,
-                episodes_count,
-                episodes,
-            }: InfoSlugTitle,
-        ) -> Self {
-            Info {
-                slug,
-                title: name,
-                episodes_count,
-                episodes,
-            }
-        }
-    }
-
-    fn parse_info<'a, T: Into<Info> + Deserialize<'a>>(body: &'a str) -> serde_json::Result<Info> {
-        serde_json::from_slice::<T>(body.as_bytes()).map(Into::into)
-    }
-
-    fn fetch_info_page<'a>(
+    struct RawVideo {
         id: u64,
-        start: u64,
-        stop: u64,
-        slug: &'a mut Option<Box<str>>,
-        title: &'a mut Option<Box<str>>,
-    ) -> Result<Info> {
-        let url = format!(
-            domain!("https://www." _ "/info_api/{}/1?start_range={}&end_range={}"),
-            id, start, stop
-        );
-
-        let body = http::get(&url).context("Invalid informations")?;
-
-        match (slug.is_none(), title.is_none()) {
-            (true, true) => parse_info::<InfoSlugTitle>(&body),
-            (true, false) => parse_info::<InfoSlug>(&body),
-            (false, true) => parse_info::<InfoTitle>(&body),
-            (false, false) => parse_info::<InfoMin>(&body),
-        }
-        .context("Invalid informations")
+        language: Box<str>,
+    }
+    #[derive(Deserialize)]
+    struct RawEpisode {
+        number: String,
+        videos: Vec<RawVideo>,
+    }
+    #[derive(Deserialize)]
+    struct Page {
+        episodes: Vec<RawEpisode>,
+        tab_size: u64,
+        total: u64,
     }
 
-    fn num_len(mut n: u64) -> usize {
-        if n == 0 {
-            return 1;
-        }
-
-        let mut len = 0;
-        while n > 0 {
-            n /= 10;
-            len += 1;
-        }
-        len
-    }
-
-    struct Pages {
-        current: u64,
-        max: u64,
-    }
-
-    impl Pages {
-        #[inline(always)]
-        pub fn new(max: u64) -> Self {
-            Self { current: 1, max }
+    let mut raw = Vec::new();
+    let mut start = 1;
+    loop {
+        let page: Page = serde_json::from_str(
+            &http::get(&format!(
+                domain!("https://" www_ "/api/anime/{}/episodes?start={}"),
+                anime_id, start
+            ))
+            .context("Invalid informations")?,
+        )
+        .context("Invalid informations")?;
+        let empty = page.episodes.is_empty();
+        raw.extend(page.episodes);
+        start += page.tab_size;
+        if empty || start > page.total {
+            break;
         }
     }
 
-    impl Iterator for Pages {
-        type Item = (u64, u64);
+    let lang: Box<str> = video
+        .and_then(|v| raw.iter().flat_map(|e| &e.videos).find(|x| x.id == v))
+        .map_or("ita".into(), |x| x.language.clone());
 
-        fn next(&mut self) -> Option<Self::Item> {
-            if self.current < self.max {
-                let start = self.current;
-                self.current += 120;
-                let stop = (self.current - 1).min(self.max);
-                Some((start, stop))
-            } else {
-                None
-            }
-        }
-    }
-
-    struct InfoFetcher<'a> {
-        id: u64,
-        num_len: usize,
-        eps: Option<std::vec::IntoIter<Episode>>,
-        pages: Option<Pages>,
-        slug: &'a mut Option<Box<str>>,
-        title: &'a mut Option<Box<str>>,
-        finish: bool,
-    }
-
-    impl<'a> Iterator for InfoFetcher<'a> {
-        type Item = Result<(Box<str>, Episode)>;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            loop {
-                if let Some(mut eps) = self.eps.take()
-                    && let Some(ep) = eps.next()
-                {
-                    self.eps = Some(eps);
-                    let mut name = ep.number.clone();
-                    name.pad_left(self.num_len);
-                    return Some(Ok((name.into(), ep)));
-                }
-
-                if let Some(mut pages) = self.pages.take() {
-                    if let Some((start, stop)) = pages.next() {
-                        self.pages = Some(pages);
-                        match fetch_info_page(self.id, start, stop, self.slug, self.title) {
-                            Ok(mut i) => {
-                                if let Some(slug) = i.slug.take() {
-                                    *self.slug = Some(slug);
-                                }
-                                if let Some(title) = i.title.take() {
-                                    *self.title = Some(title);
-                                }
-                                self.eps = Some(i.episodes.into_iter());
-                                continue;
-                            }
-                            Err(err) => {
-                                self.finish = true;
-                                return Some(Err(err));
-                            }
-                        }
-                    } else {
-                        self.finish = true;
-                    }
-                }
-
-                if self.finish {
-                    return None;
-                }
-
-                match fetch_info_page(self.id, 1, 120, self.slug, self.title) {
-                    Ok(mut info) => {
-                        if let Some(slug) = info.slug.take() {
-                            *self.slug = Some(slug);
-                        }
-                        if let Some(title) = info.title.take() {
-                            *self.title = Some(title);
-                        }
-                        self.eps = Some(info.episodes.into_iter());
-                        self.num_len = num_len(info.episodes_count);
-                        let mut pages = Pages::new(info.episodes_count);
-                        _ = pages.next();
-                        self.pages = Some(pages);
-                    }
-                    Err(err) => {
-                        self.finish = true;
-                        return Some(Err(err));
-                    }
-                };
-            }
-        }
-    }
-
-    InfoFetcher {
-        id,
-        num_len: 0,
-        eps: None,
-        pages: None,
-        finish: false,
-        slug,
-        title,
-    }
+    let num_len = raw.iter().map(|e| e.number.len()).max().unwrap_or(0);
+    Ok(raw
+        .into_iter()
+        .filter_map(|e| {
+            let v = e
+                .videos
+                .iter()
+                .find(|v| v.language == lang)
+                .or_else(|| e.videos.iter().find(|v| &*v.language == "ita"))
+                .or_else(|| e.videos.first())?;
+            let mut name = e.number.clone();
+            name.pad_left(num_len);
+            Some((
+                name.into(),
+                Episode {
+                    id: v.id,
+                    number: e.number,
+                },
+            ))
+        })
+        .collect())
 }
 
 trait PadLeft {
